@@ -451,6 +451,16 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
 .avatar.r-defense { background: radial-gradient(circle at 30% 25%, rgba(106,166,224,0.28), rgba(106,166,224,0.08)); }
 .avatar.r-juror   { background: radial-gradient(circle at 30% 25%, rgba(105,194,152,0.28), rgba(105,194,152,0.08)); }
 .avatar.r-clerk   { background: radial-gradient(circle at 30% 25%, rgba(179,162,236,0.28), rgba(179,162,236,0.08)); }
+.r-witness { color: var(--witness, #c0935c); }
+.avatar.r-witness { background: radial-gradient(circle at 30% 25%, rgba(192,147,92,0.28), rgba(192,147,92,0.08)); }
+
+/* optional "co-accused & witnesses" disclosure in the intake form */
+.advanced { margin-top: 2px; }
+.advanced > summary { cursor: pointer; font-size: 13px; color: var(--muted); padding: 4px 0; list-style: none; }
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before { content: "▸ "; color: var(--gold); }
+.advanced[open] > summary::before { content: "▾ "; }
+.advanced > summary:hover { color: var(--gold); }
 
 /* typewriter caret */
 .body.typing::after {

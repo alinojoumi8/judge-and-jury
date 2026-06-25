@@ -63,25 +63,88 @@ def parse_json_lenient(candidate: str) -> dict:
         return json.loads(escaped, strict=False)
 
 
+def contains_cjk(text: str) -> bool:
+    """True if `text` contains CJK / fullwidth characters.
+
+    MiniMax reasoning models occasionally code-switch out of English mid-answer.
+    A "write in English" instruction alone doesn't reliably prevent it, so we
+    detect the slip and re-prompt (see `run_structured(require_english=True)`).
+    """
+    for ch in text:
+        o = ord(ch)
+        if (
+            0x3000 <= o <= 0x303F      # CJK symbols & punctuation
+            or 0x3400 <= o <= 0x9FFF   # CJK ideographs (ext-A + unified)
+            or 0xF900 <= o <= 0xFAFF   # CJK compatibility ideographs
+            or 0xFF00 <= o <= 0xFFEF   # halfwidth/fullwidth forms
+        ):
+            return True
+    return False
+
+
+def _model_text(obj: BaseModel) -> str:
+    """Concatenate every string value in a (possibly nested) model — for scanning."""
+    parts: list[str] = []
+
+    def walk(v: object) -> None:
+        if isinstance(v, str):
+            parts.append(v)
+        elif isinstance(v, BaseModel):
+            for x in v.__dict__.values():
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+
+    walk(obj)
+    return " ".join(parts)
+
+
 T = TypeVar("T", bound=BaseModel)
 
 
-async def run_structured(agent, prompt: str, model_cls: Type[T], retries: int = 2) -> T:
-    """Run a plain-text agent and parse/validate its reply into `model_cls`."""
+async def run_structured(
+    agent,
+    prompt: str,
+    model_cls: Type[T],
+    retries: int = 2,
+    *,
+    require_english: bool = False,
+) -> T:
+    """Run a plain-text agent and parse/validate its reply into `model_cls`.
+
+    With `require_english=True`, a reply that parses but contains CJK characters
+    is rejected and re-prompted in English, reusing the same retry budget.
+    """
     last_err = ""
+    retry_note = ""
     for attempt in range(retries + 1):
-        p = prompt
-        if attempt > 0:
-            p = (
-                f"{prompt}\n\nYour previous reply could not be parsed as JSON for the "
-                f"required schema (error: {last_err}). Reply with ONLY a single valid "
-                "JSON object — no prose, no markdown fences."
-            )
+        p = prompt if attempt == 0 else f"{prompt}\n\n{retry_note}"
         result = await agent.run(p)
         raw = result.output if isinstance(result.output, str) else str(result.output)
         candidate = extract_json(raw)
         try:
-            return model_cls.model_validate(parse_json_lenient(candidate))
+            obj = model_cls.model_validate(parse_json_lenient(candidate))
         except Exception as exc:  # noqa: BLE001
             last_err = str(exc)[:200]
-    raise ValueError(f"Could not parse {model_cls.__name__} after {retries + 1} tries: {last_err}")
+            retry_note = (
+                "Your previous reply could not be parsed as JSON for the required "
+                f"schema (error: {last_err}). Reply with ONLY a single valid JSON "
+                "object — no prose, no markdown fences."
+            )
+            continue
+        if require_english and contains_cjk(_model_text(obj)):
+            last_err = "non-English (CJK) characters in output"
+            retry_note = (
+                "Your previous reply contained non-English characters. Reply again "
+                "using the SAME JSON schema but written ENTIRELY IN ENGLISH — do not "
+                "use any Chinese or other non-Latin characters."
+            )
+            continue
+        return obj
+    raise ValueError(
+        f"Could not produce a valid {model_cls.__name__} after {retries + 1} tries: {last_err}"
+    )

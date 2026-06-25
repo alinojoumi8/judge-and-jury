@@ -92,10 +92,30 @@
             </div>
           </div>
 
-          <div class="field">
-            <label for="f-model">Model <span class="hint">optional</span></label>
-            <input id="f-model" name="model" placeholder="default: MiniMax-M2.1" autocomplete="off" />
+          <div class="grid-2">
+            <div class="field">
+              <label for="f-delib">Deliberation rounds</label>
+              <input id="f-delib" type="number" name="deliberation_rounds" value="2" min="1" max="4" />
+            </div>
+            <div class="field">
+              <label for="f-model">Model <span class="hint">optional</span></label>
+              <input id="f-model" name="model" placeholder="default: MiniMax-M2.1" autocomplete="off" />
+            </div>
           </div>
+
+          <details class="advanced">
+            <summary>Co-accused &amp; witnesses <span class="hint">optional</span></summary>
+            <div class="field">
+              <label for="f-defendants">Co-accused <span class="hint">one per line — Name | role | their side</span></label>
+              <textarea id="f-defendants" name="defendants_raw" rows="3"
+                        placeholder="Jane Roe | director | I only signed where instructed&#10;John Doe | salesman | I acted in good faith"></textarea>
+            </div>
+            <div class="field">
+              <label for="f-witnesses">Witnesses <span class="hint">Name | role | prosecution/defense | what they know</span></label>
+              <textarea id="f-witnesses" name="witnesses_raw" rows="3"
+                        placeholder="Mary Smith | complainant | prosecution | invested, was promised guaranteed returns&#10;Alex Lee | expert | prosecution | forensic accountant who traced the funds"></textarea>
+            </div>
+          </details>
 
           <button type="submit" id="startBtn" class="btn-primary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

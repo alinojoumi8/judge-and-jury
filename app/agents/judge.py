@@ -50,9 +50,26 @@ Reply with ONLY a single JSON object (no prose, no markdown fences):
 """
 
 
-def build_judge_agent(model) -> Agent:
-    """Free-form judge for the opening and any interjections."""
-    return Agent(model, system_prompt=JUDGE_SYSTEM_PROMPT, model_settings={"temperature": 0.5})
+_ARGUMENT_ONLY_PARA = """\
+This is an argument-only proceeding: there is NO witness testimony and NO evidence
+phase. Do not reference witnesses, testimony, exhibits, or evidence "to be heard"."""
+
+_WITNESS_PARA = """\
+This proceeding INCLUDES witness testimony and cross-examination; you may refer to
+the testimony on the record. When asked to RULE ON AN OBJECTION, reply with ONLY
+{"ruling": "sustained" or "overruled", "text": "one short sentence"} instead of the
+{"statement": ...} shape below."""
+
+# Witness-mode variant differs only in that one paragraph.
+JUDGE_SYSTEM_PROMPT_WITNESSES = JUDGE_SYSTEM_PROMPT.replace(
+    _ARGUMENT_ONLY_PARA, _WITNESS_PARA
+)
+
+
+def build_judge_agent(model, *, with_witnesses: bool = False) -> Agent:
+    """Free-form judge for the opening, interjections, and objection rulings."""
+    prompt = JUDGE_SYSTEM_PROMPT_WITNESSES if with_witnesses else JUDGE_SYSTEM_PROMPT
+    return Agent(model, system_prompt=prompt, model_settings={"temperature": 0.5})
 
 
 def build_ruling_agent(model) -> Agent:

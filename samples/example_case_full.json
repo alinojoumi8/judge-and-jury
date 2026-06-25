@@ -1,0 +1,37 @@
+{
+  "title": "R. v. Marlowe & Vance — The Starlight Festival Refund Case",
+  "case_type": "criminal",
+  "jurisdiction": "Ontario, Canada",
+  "charge_or_claim": "Fraud over $5,000 (Criminal Code s.380) — allegedly selling tickets to a music festival the accused knew would never happen, and keeping the money instead of refunding it.",
+  "jury_size": 3,
+  "argument_rounds": 1,
+  "deliberation_rounds": 2,
+  "qa_exchanges": 2,
+  "defendants": [
+    {
+      "name": "Dana Marlowe",
+      "role": "festival organizer / CEO",
+      "account": "I genuinely planned the festival — the venue was booked and the line-up was in negotiation. The headline act pulled out three weeks before the date and the venue kept our large non-refundable deposit, so there was simply nothing left to refund. I never intended to deceive anyone."
+    },
+    {
+      "name": "Sam Vance",
+      "role": "ticket-sales contractor",
+      "account": "I was hired only to build and run the ticket website. I had no visibility into the festival's finances, I passed every dollar collected straight to Marlowe's company, and I had no idea anything was wrong until it was cancelled."
+    }
+  ],
+  "witnesses": [
+    {
+      "name": "Jordan Pike",
+      "role": "complainant",
+      "called_by": "prosecution",
+      "what_they_know": "Bought four tickets for $1,200, was promised on the website a full refund if the festival was cancelled, and after the cancellation never received the refund or any reply to repeated emails."
+    },
+    {
+      "name": "Riley Chen",
+      "role": "expert",
+      "called_by": "prosecution",
+      "what_they_know": "A forensic accountant who reviewed the company's bank records and can describe where the ticket money went (deposits to the venue, marketing, and some operating costs), but cannot say what anyone intended."
+    }
+  ],
+  "your_side": "Dana Marlowe and Sam Vance are charged with fraud over $5,000 arising from the 'Starlight Festival', a summer music event cancelled three weeks before it was due to run. The Crown alleges they sold roughly $80,000 in tickets for an event they knew would never happen and kept the money instead of issuing refunds. The defence says the festival was real and well advanced — venue booked, acts in negotiation — but collapsed when the headline act withdrew and the venue refused to return a large non-refundable deposit, leaving no funds to refund. Marlowe says there was never any intent to deceive; Vance says he merely ran the ticketing website and had no knowledge of the festival's finances. The question is whether the Crown can prove dishonest intent beyond a reasonable doubt — separately for each accused, since their roles were very different."
+}

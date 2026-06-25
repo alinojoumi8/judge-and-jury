@@ -23,11 +23,21 @@ runs the trial and streams events to the page:
 2. **Jury selection** — generates your chosen number of distinct jurors.
 3. **Judge opening** — frames the case and instructs the jury.
 4. **Opening statements** — Crown, then Defense.
-5. **Argument rounds** — Crown vs. Defense, back and forth (configurable count).
-6. **Closing statements** — Crown, then Defense.
-7. **Jury deliberation** — each juror votes; a split jury reconsiders once.
-8. **Verdict** — tallied from the jurors' votes.
-9. **Judge's ruling** — sentence (criminal) or remedy (civil).
+5. **Witness testimony** *(optional)* — each witness is examined and cross-examined,
+   with the judge ruling on objections. Skipped if you supply no witnesses.
+6. **Argument rounds** — Crown vs. Defense, back and forth (configurable count).
+7. **Closing statements** — Crown, then Defense.
+8. **Jury deliberation** — jurors vote over several rounds (configurable), seeing each
+   other's reasoning between rounds; deliberation stops early once the jury is settled.
+9. **Verdict** — tallied from the votes. **Criminal verdicts require unanimity** (any
+   split is a hung jury → mistrial); civil verdicts carry on a majority. With multiple
+   **co-accused**, each defendant gets a separate verdict.
+10. **Judge's ruling** — sentence (criminal) or remedy (civil); a mistrial if hung.
+
+> **Optional inputs** (all default off, so a basic case behaves exactly as before):
+> `defendants` (co-accused, each judged separately), `witnesses` (adds the evidence
+> phase), and `deliberation_rounds`. See [`samples/example_case_full.json`](samples/example_case_full.json)
+> for a worked example, and run it with `python scripts/run_case_trial.py samples/example_case_full.json`.
 
 ---
 

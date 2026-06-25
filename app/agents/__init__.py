@@ -5,6 +5,7 @@ from .defense import build_defense_agent
 from .intake import build_intake_agent
 from .judge import build_judge_agent, build_ruling_agent
 from .juror import build_juror_agent, build_juror_pool_agent
+from .witness import build_witness_agent
 
 __all__ = [
     "build_intake_agent",
@@ -14,4 +15,5 @@ __all__ = [
     "build_ruling_agent",
     "build_juror_agent",
     "build_juror_pool_agent",
+    "build_witness_agent",
 ]

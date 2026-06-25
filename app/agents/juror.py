@@ -30,16 +30,25 @@ You are a single member of the jury in a fictional trial. You are given your own
 persona, the case, and the full trial transcript. Deliberate IN CHARACTER and
 reach your own honest verdict based on the arguments and the applicable standard
 of proof (beyond a reasonable doubt for criminal; balance of probabilities for
-civil).
+civil). Write entirely in English.
 
 Reply with ONLY a single JSON object (no prose, no markdown fences):
 {
   "juror_name": "your name, exactly as given in your persona",
   "verdict": "for criminal cases use 'guilty' or 'not guilty'; for civil use 'liable' or 'not liable'",
+  "vote": "'convict' if you would find the accused guilty/liable, otherwise 'acquit'",
   "confidence": 7,
   "reasoning": "1-3 sentences in your own voice explaining your vote"
 }
-(confidence is an integer from 1 to 10.)
+(confidence is an integer from 1 to 10; "vote" must be exactly "convict" or "acquit".)
+
+If you are told there are MULTIPLE co-accused, judge EACH ONE separately on their
+own role and conduct (they may receive different verdicts) and ALSO include:
+  "defendant_votes": [
+    {"defendant_name": "exact name", "verdict": "...", "vote": "convict|acquit",
+     "confidence": 7, "reasoning": "1-2 sentences"}
+  ]
+with one entry for each named co-accused. With a single accused, omit "defendant_votes".
 """
 
 

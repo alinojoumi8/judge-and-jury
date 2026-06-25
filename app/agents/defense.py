@@ -44,5 +44,33 @@ This is a fictional courtroom simulation, not real legal advice.
 """
 
 
-def build_defense_agent(model) -> Agent:
-    return Agent(model, system_prompt=DEFENSE_SYSTEM_PROMPT, model_settings={"temperature": 0.8})
+_ARGUMENT_ONLY_BLOCK = """\
+Ground rules for this proceeding:
+- This is an ARGUMENT-ONLY trial: there is NO witness testimony, NO
+  cross-examination, and NO evidence or exhibit phase.
+- Treat the facts in the case file as the agreed record. Build your case from
+  those facts and the law. Do NOT say you will "call a witness", refer to
+  testimony, exhibits, or evidence "to be presented", or invent new facts."""
+
+_WITNESS_GROUND_RULES = """\
+Ground rules for this proceeding:
+- This proceeding INCLUDES witness testimony and cross-examination. When asked to
+  examine or cross-examine a witness, ask focused questions and rely on the
+  testimony actually given. During opening/argument/closing, argue from the agreed
+  facts AND any testimony already on the record.
+- Do NOT invent evidence or testimony that contradicts the record.
+
+When the instruction asks you to QUESTION a witness, reply with ONLY
+{"question": "your question"}. When it asks for an OBJECTION, reply with ONLY
+{"object": true, "ground": "leading|hearsay|speculation|relevance", "text": "..."}
+or {"object": false}. Otherwise reply with {"statement": "..."} as below."""
+
+# Witness-mode variant differs only in the ground-rules block.
+DEFENSE_SYSTEM_PROMPT_WITNESSES = DEFENSE_SYSTEM_PROMPT.replace(
+    _ARGUMENT_ONLY_BLOCK, _WITNESS_GROUND_RULES
+)
+
+
+def build_defense_agent(model, *, with_witnesses: bool = False) -> Agent:
+    prompt = DEFENSE_SYSTEM_PROMPT_WITNESSES if with_witnesses else DEFENSE_SYSTEM_PROMPT
+    return Agent(model, system_prompt=prompt, model_settings={"temperature": 0.8})

@@ -37,6 +37,7 @@ function roleInfo(speaker) {
   if (s.startsWith("crown")) return { key: "crown", tag: "Prosecution", icon: "crown" };
   if (s.startsWith("plaintiff") || s.startsWith("commission")) return { key: "crown", tag: "Plaintiff", icon: "crown" };
   if (s.startsWith("defense")) return { key: "defense", tag: "Defense", icon: "shield" };
+  if (s.startsWith("witness")) return { key: "witness", tag: "Witness", icon: "user" };
   if (s.startsWith("juror")) return { key: "juror", tag: "Juror", icon: "user" };
   if (s.startsWith("jury")) return { key: "juror", tag: "The Jury", icon: "scales" };
   if (s.includes("clerk")) return { key: "clerk", tag: "Court Clerk", icon: "file" };
@@ -55,10 +56,35 @@ form.addEventListener("submit", async (e) => {
     your_side: fd.get("your_side"),
     jury_size: parseInt(fd.get("jury_size"), 10),
     argument_rounds: parseInt(fd.get("argument_rounds"), 10),
+    deliberation_rounds: parseInt(fd.get("deliberation_rounds"), 10) || 2,
     model: (fd.get("model") || "").trim() || null,
   };
+  const defendants = parseDefendants(fd.get("defendants_raw"));
+  const witnesses = parseWitnesses(fd.get("witnesses_raw"));
+  if (defendants.length) payload.defendants = defendants;
+  if (witnesses.length) payload.witnesses = witnesses;
   await runTrial(payload);
 });
+
+// Optional co-accused: one per line, "Name | role | their side".
+function parseDefendants(raw) {
+  return (raw || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [name, role, account] = l.split("|").map((s) => (s || "").trim());
+    return name ? { name, role: role || "", account: account || "" } : null;
+  }).filter(Boolean);
+}
+
+const WITNESS_ROLES = ["complainant", "investigator", "expert", "character", "defense_witness", "other"];
+// Optional witnesses: one per line, "Name | role | prosecution/defense | what they know".
+function parseWitnesses(raw) {
+  return (raw || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [name, role, calledBy, know] = l.split("|").map((s) => (s || "").trim());
+    if (!name) return null;
+    const r = WITNESS_ROLES.includes((role || "").toLowerCase()) ? role.toLowerCase() : "other";
+    const cb = /defen/i.test(calledBy || "") ? "defense" : "prosecution";
+    return { name, role: r, called_by: cb, what_they_know: know || "" };
+  }).filter(Boolean);
+}
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
@@ -204,6 +230,7 @@ function renderStructured(ev) {
   const d = ev.data || {};
   if (d.charges_or_claims) return renderCase(ev.speaker, d);
   if (d.jurors) return renderJury(ev.speaker, d.jurors);
+  if (d.objection_ruling) return renderObjection(d);
   if (d.tally && d.outcome) return renderVerdict(d);
   if (d.sentence_or_remedy !== undefined && d.verdict_acknowledgement !== undefined) return renderRuling(ev.speaker, d);
   if (d.verdict && d.juror_name) return renderVote(ev.speaker, d);
@@ -241,17 +268,46 @@ function renderJury(speaker, jurors) {
   append(row);
 }
 
+// Prefer the structured convict/acquit signal; fall back to careful text (\bnot\b
+// avoids matching "cannot"). Returns true when the vote favours the defendant.
+function voteIsClear(vote, verdict) {
+  return vote ? vote === "acquit" : /\bnot\b|acquit|innocent/i.test(verdict || "");
+}
+
 function renderVote(speaker, d) {
-  const clear = /not|acquit|innocent/i.test(d.verdict);
   const name = speaker.includes("—") ? speaker.split("—")[1].trim() : (d.juror_name || "Juror");
   const row = el("div", "card-row r-juror");
+  let badges;
+  if (Array.isArray(d.defendant_votes) && d.defendant_votes.length) {
+    // Multi-defendant: one badge per co-accused.
+    badges = d.defendant_votes.map((dv) =>
+      `<span class="vote-badge ${voteIsClear(dv.vote, dv.verdict) ? "vote-clear" : "vote-guilty"}">` +
+      `${escapeHtml(dv.defendant_name)}: ${escapeHtml(dv.verdict)}</span>`
+    ).join(" ");
+  } else {
+    badges =
+      `<span class="vote-badge ${voteIsClear(d.vote, d.verdict) ? "vote-clear" : "vote-guilty"}">${escapeHtml(d.verdict)}</span>` +
+      `<span class="conf">${d.confidence}/10</span>`;
+  }
   row.innerHTML =
     `<span class="avatar r-juror">${svg("user")}</span>` +
     `<div class="bubble">` +
-      `<div class="who"><span class="name">${escapeHtml(name)}</span>` +
-        `<span class="vote-badge ${clear ? "vote-clear" : "vote-guilty"}">${escapeHtml(d.verdict)}</span>` +
-        `<span class="conf">${d.confidence}/10</span>` +
-      `</div><div class="body">${escapeHtml(d.reasoning || "")}</div>` +
+      `<div class="who"><span class="name">${escapeHtml(name)}</span>${badges}</div>` +
+      `<div class="body">${escapeHtml(d.reasoning || "")}</div>` +
+    `</div>`;
+  append(row);
+}
+
+function renderObjection(d) {
+  const sustained = String(d.objection_ruling || "").toLowerCase().startsWith("sustain");
+  const row = el("div", "card-row r-judge");
+  row.innerHTML =
+    `<span class="avatar r-judge">${svg("gavel")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">The Bench</span>` +
+        `<span class="vote-badge ${sustained ? "vote-guilty" : "vote-clear"}">` +
+        `${escapeHtml(String(d.objection_ruling || "ruling").toUpperCase())}</span></div>` +
+      (d.text ? `<div class="body">${escapeHtml(d.text)}</div>` : "") +
     `</div>`;
   append(row);
 }
@@ -262,8 +318,9 @@ function renderVerdict(d) {
     return `<div class="col ${win ? "win" : ""}"><div class="num">${n}</div><div class="lbl">${escapeHtml(k)}</div></div>`;
   }).join("");
   const n = el("div", "spotlight");
+  const title = d.defendant_name ? `The Verdict — ${escapeHtml(d.defendant_name)}` : "The Verdict";
   n.innerHTML =
-    `<div class="spot-head">${svg("scales", 1.7)} The Verdict</div>` +
+    `<div class="spot-head">${svg("scales", 1.7)} ${title}</div>` +
     `<div class="verdict-outcome">${escapeHtml(d.outcome)}</div>` +
     `<div class="tally">${cols}</div>` +
     (d.dissent_summary ? `<div class="dissent">${escapeHtml(d.dissent_summary)}</div>` : "");
