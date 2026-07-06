@@ -19,25 +19,69 @@ Each courtroom role is a PydanticAI agent with its own system prompt, all driven
 your MiniMax model. A state machine ([`app/orchestrator.py`](app/orchestrator.py))
 runs the trial and streams events to the page:
 
-1. **Intake** — a law-firm clerk turns your story into a structured case.
-2. **Jury selection** — generates your chosen number of distinct jurors.
-3. **Judge opening** — frames the case and instructs the jury.
-4. **Opening statements** — Crown, then Defense.
-5. **Witness testimony** *(optional)* — each witness is examined and cross-examined,
-   with the judge ruling on objections. Skipped if you supply no witnesses.
+1. **Intake** — a law-firm clerk turns your story into a structured case and settles
+   an **Agreed Record**: an immutable ledger of the parties, key figures, dates,
+   admissible facts, and the only legal authorities in play. It is threaded into
+   every later prompt as the single source of truth, so agents argue from it rather
+   than inventing facts or case citations.
+2. **Jury selection & casting** — generates your chosen number of distinct jurors,
+   and (by default) **auto-casts a personality for the Crown, Defence, Judge, and
+   each witness** — a name, background, and manner (advocacy style / bench
+   temperament / witness demeanour) that each role then holds consistently, so the
+   trial reads like distinct real people rather than interchangeable archetypes.
+   Turn it off with `personas: false`.
+3. **Judge opening** — frames the case, sets out the **legal elements** the Crown
+   must prove, and charges the jury that a reasonable doubt on *any one* element
+   means acquittal.
+4. **Opening statements** — before they speak, each side privately fixes a **case
+   theory** (its strongest points plus the opponent's best argument and how it will
+   answer it) that it then holds to consistently through the trial. Crown opens,
+   then Defense.
+5. **Witness testimony** *(optional)* — each witness is examined, cross-examined, and
+   **re-examined**. Witnesses **remember their own prior testimony** (carried across
+   direct → cross → re-direct), so cross-examination can probe inconsistencies; either
+   side may object on any examination and the judge rules. Once the prosecution closes
+   its case the defence may move for a **directed verdict** (no-evidence motion), which
+   the judge grants or dismisses. Skipped if you supply no witnesses.
 6. **Argument rounds** — Crown vs. Defense, back and forth (configurable count).
+   Each turn opens by **steel-manning the opponent's strongest point and rebutting
+   it head-on** before advancing its own case; closings do the same.
 7. **Closing statements** — Crown, then Defense.
-8. **Jury deliberation** — jurors vote over several rounds (configurable), seeing each
-   other's reasoning between rounds; deliberation stops early once the jury is settled.
+8. **Jury deliberation** — the jury first takes a **private straw poll** (each juror
+   votes independently, before any discussion, to curb herding). Then, by default, it
+   holds a **spoken deliberation**: a foreperson opens, each juror speaks in turn,
+   hearing and responding to the others, before casting a binding vote. Jurors decide
+   **element by element** — convicting only if *every* element is proven — and a
+   low-confidence consensus is sent back for another round. The transcript shows how
+   the room moved from the straw poll. Set `deliberation_style: "poll"` for the
+   classic quiet parallel re-vote.
 9. **Verdict** — tallied from the votes. **Criminal verdicts require unanimity** (any
    split is a hung jury → mistrial); civil verdicts carry on a majority. With multiple
-   **co-accused**, each defendant gets a separate verdict.
-10. **Judge's ruling** — sentence (criminal) or remedy (civil); a mistrial if hung.
+   **co-accused**, each defendant gets a separate verdict; with multiple **charges**,
+   each charge gets its own verdict (e.g. guilty of fraud, not guilty of possession).
+10. **Judge's ruling** — sentence (criminal) or remedy (civil); a mistrial if hung. On
+    a conviction the sentence is **structured** — aggravating/mitigating factors, a
+    realistic range, restitution, and conditions.
 
-> **Optional inputs** (all default off, so a basic case behaves exactly as before):
-> `defendants` (co-accused, each judged separately), `witnesses` (adds the evidence
-> phase), and `deliberation_rounds`. See [`samples/example_case_full.json`](samples/example_case_full.json)
-> for a worked example, and run it with `python scripts/run_case_trial.py samples/example_case_full.json`.
+> **Anti-hallucination fact-check** *(opt-in)*: with `grounding_check: true`, a neutral
+> verifier scans the most consequential statements (closings and the ruling by default)
+> against the Agreed Record and flags any ungrounded claim, misquoted figure, or
+> invented case citation — shown inline, never altering the verdict.
+
+> **Optional inputs**: `defendants` (co-accused, each judged separately), `witnesses`
+> (adds the evidence phase), `deliberation_rounds`, `deliberation_style`
+> (`"dialogue"` (default) / `"poll"`), `straw_poll` (default on), `personas`
+> (auto-cast counsel/bench/witness personalities, default on; each `Witness` may also
+> set a manual `demeanour`; **pin** a role with `crown_persona` / `defense_persona` /
+> `judge_persona` — a `{name, background, style}` object — to A/B how advocacy style
+> alone moves a verdict, see [`samples/personas_ab.json`](samples/personas_ab.json)),
+> `redirect` /
+> `qa_redirect` (re-examination, default on), `allow_directed_verdict` (default on),
+> and the anti-hallucination knobs `grounding_check` / `grounding_phases` /
+> `grounding_adversarial` / `self_ground` (all default off). Multiple charges are
+> driven by the charge text — name more than one offence and each gets its own
+> verdict. See [`samples/example_case_full.json`](samples/example_case_full.json) for a
+> worked example, and run it with `python scripts/run_case_trial.py samples/example_case_full.json`.
 
 ---
 

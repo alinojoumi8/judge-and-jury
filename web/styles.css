@@ -171,6 +171,94 @@ body {
 .disclaimer svg { width: 17px; height: 17px; flex: none; color: var(--gold); }
 .disclaimer strong { color: var(--ink); }
 
+/* ---------- hero (cinematic landing video) ---------- */
+.hero-wrap {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: clamp(12px, 2vw, 22px) clamp(16px, 4vw, 40px) 0;
+}
+.hero {
+  position: relative;
+  height: clamp(220px, 30vw, 400px);
+  border-radius: var(--radius);
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid rgba(205, 167, 90, 0.28);
+  box-shadow: var(--shadow);
+  background: var(--surface-1) url("/static/hero-poster.jpg") center / cover no-repeat;
+}
+.hero-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: -1;
+}
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(11, 13, 18, 0.92) 0%, rgba(11, 13, 18, 0.6) 42%,
+                    rgba(11, 13, 18, 0.12) 76%, rgba(11, 13, 18, 0) 100%),
+    linear-gradient(0deg, rgba(11, 13, 18, 0.5), transparent 48%);
+}
+.hero-content {
+  position: relative;
+  height: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 13px;
+  padding: clamp(22px, 4vw, 52px);
+}
+.hero-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(1.7rem, 3.4vw, 3rem);
+  line-height: 1.08;
+  color: var(--ink);
+  text-shadow: 0 2px 22px rgba(0, 0, 0, 0.65);
+}
+.hero-sub {
+  margin: 0;
+  max-width: 46ch;
+  color: var(--ink-soft);
+  font-size: clamp(0.92rem, 1.2vw, 1.08rem);
+  line-height: 1.6;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.55);
+}
+.hero-cta {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.92rem;
+  letter-spacing: 0.3px;
+  color: #1a1205;
+  text-decoration: none;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold) 55%, var(--gold-deep));
+  border: 1px solid var(--gold-deep);
+  box-shadow: 0 10px 24px -12px rgba(205, 167, 90, 0.6);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.hero-cta:hover { transform: translateY(-1px); box-shadow: 0 14px 30px -12px rgba(205, 167, 90, 0.75); }
+.hero-cta svg { width: 16px; height: 16px; }
+@media (max-width: 600px) {
+  .hero-content { max-width: none; }
+  .hero-overlay {
+    background: linear-gradient(0deg, rgba(11, 13, 18, 0.92) 12%,
+                                rgba(11, 13, 18, 0.45) 62%, rgba(11, 13, 18, 0.2) 100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) { .hero-video { display: none; } }
+
 /* ---------- stage layout ---------- */
 .stage {
   display: grid;
@@ -519,6 +607,46 @@ ul.facts li { margin: 3px 0; font-size: 0.9rem; color: var(--ink-soft); }
 .vote-guilty { background: rgba(224,106,95,0.16); color: var(--guilty); border: 1px solid rgba(224,106,95,0.4); }
 .vote-clear  { background: rgba(105,194,152,0.16); color: var(--clear); border: 1px solid rgba(105,194,152,0.4); }
 .conf { font-size: 0.72rem; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* per-element findings checklist under a juror's vote */
+.elements { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.elements .el {
+  display: flex; align-items: flex-start; gap: 7px;
+  font-size: 0.82rem; line-height: 1.45; color: var(--ink-soft);
+}
+.el .el-mark {
+  flex: none; width: 16px; text-align: center; font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.el.el-ok  .el-mark { color: var(--clear); }
+.el.el-no  .el-mark { color: var(--guilty); }
+.dv { margin: 6px 0; }
+.dv + .dv { padding-top: 6px; border-top: 1px dashed rgba(205,167,90,0.18); }
+.dv b { color: var(--ink); }
+.cv { margin: 5px 0; }
+.cv + .cv { padding-top: 5px; border-top: 1px dotted rgba(205,167,90,0.15); }
+.cv b { color: var(--ink); }
+
+/* fact-check (anti-hallucination) card */
+.avatar.r-factcheck {
+  color: var(--gold-bright);
+  background: rgba(205,167,90,0.14);
+  border-color: rgba(205,167,90,0.5);
+}
+.fc-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.fc-flag {
+  font-size: 0.82rem; line-height: 1.45; color: var(--ink-soft);
+  padding-left: 9px; border-left: 2px solid rgba(205,167,90,0.55);
+}
+.fc-flag .fc-sev {
+  font-weight: 800; font-size: 0.7rem; letter-spacing: 0.4px;
+  margin-right: 7px; color: var(--gold-bright);
+}
+.fc-flag .fc-issue { font-style: italic; margin-right: 7px; color: var(--faint); }
+.fc-flag .fc-claim { color: var(--ink); }
+.fc-flag .fc-exp { color: var(--muted); margin-top: 2px; }
+.fc-flag.fc-severe { border-left-color: var(--guilty); }
+.fc-flag.fc-severe .fc-sev { color: var(--guilty); }
 
 /* ---------- spotlight (verdict + ruling) ---------- */
 .spotlight {

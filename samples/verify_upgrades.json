@@ -1,0 +1,22 @@
+{
+  "title": "R. v. Reyes & Cole — Counterfeit Watches (upgrade verification)",
+  "case_type": "criminal",
+  "jurisdiction": "Ontario, Canada",
+  "charge_or_claim": "Two charges against each accused: (1) Fraud over $5,000 (Criminal Code s.380) — selling counterfeit 'luxury' watches as genuine, taking about $30,000 from buyers; and (2) Possession of proceeds of crime (Criminal Code s.354) — holding the roughly $30,000 in sale proceeds knowing they came from the fraud.",
+  "jury_size": 3,
+  "argument_rounds": 1,
+  "deliberation_rounds": 2,
+  "deliberation_style": "poll",
+  "qa_exchanges": 2,
+  "max_witnesses": 2,
+  "grounding_check": true,
+  "defendants": [
+    {"name": "Mateo Reyes", "role": "street vendor / seller", "account": "I sold the watches my supplier gave me and repeated what he told me — that they were authentic. I never inspected paperwork and had no idea they might be fakes, and I kept only a small commission."},
+    {"name": "Dana Cole", "role": "wholesale supplier", "account": "I sourced the watches from a wholesaler whose documentation said they were genuine. I believed they were authentic and passed on the same papers I received; the money I held was ordinary business revenue."}
+  ],
+  "witnesses": [
+    {"name": "Priya Nair", "role": "complainant", "called_by": "prosecution", "what_they_know": "I paid $6,000 for a watch Mateo Reyes told me was a genuine Swiss luxury model with a manufacturer warranty. A jeweller later told me it was a counterfeit worth about $40."},
+    {"name": "Sam Whitfield", "role": "expert", "called_by": "defense", "what_they_know": "I am a watch appraiser. These counterfeits are high quality and the accompanying paperwork looks authentic; an ordinary seller could plausibly believe they were genuine."}
+  ],
+  "your_side": "The defence says neither accused knew the watches were counterfeit, so neither charge is made out. Fraud requires dishonest intent and possession of proceeds requires knowledge the money came from crime — the Crown can prove neither. Reyes repeated what his supplier told him; Cole relied on documentation that appeared genuine."
+}

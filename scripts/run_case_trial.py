@@ -42,6 +42,10 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--jury", type=int, default=None, help="Override jury size (1-12).")
     p.add_argument("--rounds", type=int, default=None, help="Override argument rounds (1-5).")
+    p.add_argument(
+        "--style", choices=["dialogue", "poll"], default=None,
+        help="Override deliberation style: 'dialogue' (jurors debate) or 'poll' (quiet re-vote).",
+    )
     p.add_argument("--label", default=None, help="Tag for the transcript filename (default: case stem).")
     return p.parse_args()
 
@@ -49,11 +53,69 @@ def _parse_args() -> argparse.Namespace:
 def _render_structured(speaker: str, data: dict) -> list[str]:
     """Turn a structured event's data into readable Markdown lines."""
     out: list[str] = []
-    if "jurors" in data:  # jury selection
+    if "_record" in data:  # the Agreed Record (source of truth)
+        rec = data.get("agreed_record", {})
+        if rec.get("parties"):
+            out.append(f"- Parties: {'; '.join(rec['parties'])}")
+        if rec.get("figures"):
+            out.append(f"- Key figures: {'; '.join(rec['figures'])}")
+        if rec.get("dates"):
+            out.append(f"- Key dates: {'; '.join(rec['dates'])}")
+        if rec.get("admissible_facts"):
+            out.append("- Admissible facts:")
+            out.extend(f"  - {f}" for f in rec["admissible_facts"])
+        out.append(
+            "- Authorities on record: "
+            + ("; ".join(rec["authorities"]) if rec.get("authorities") else "none")
+        )
+    elif "_cast" in data:  # the auto-cast personalities for the non-jury roles
+        for role in ("crown", "defense", "judge"):
+            p = data.get(role) or {}
+            if p.get("name") or p.get("style"):
+                out.append(
+                    f"- **{role.title()} — {p.get('name', '')}** · {p.get('background', '')} "
+                    f"({p.get('style', '')})"
+                )
+        ws = data.get("witnesses") or []
+        if ws:
+            out.append("- Witnesses:")
+            out.extend(
+                f"  - **{w.get('name', '')}** — {w.get('style', '')}" for w in ws
+            )
+    elif "_straw" in data:  # pre-discussion straw poll (a Verdict payload)
+        tally = ", ".join(f"{k}: {v}" for k, v in data.get("tally", {}).items())
+        out.append(f"- Straw poll (private, before discussion): {tally}")
+    elif "_movement" in data:  # how the room moved after deliberation
+        i = ", ".join(f"{k}: {v}" for k, v in data.get("initial_tally", {}).items())
+        f = ", ".join(f"{k}: {v}" for k, v in data.get("final_tally", {}).items())
+        out.append(f"- Straw poll: {i}  →  Final: {f}")
+        if data.get("flips"):
+            out.append("- Jurors who moved:")
+            out.extend(f"  - {x}" for x in data["flips"])
+        else:
+            out.append("- No jurors changed their vote during deliberation.")
+    elif "_grounding" in data:  # fact-check flags
+        out.append("> ⚠ Fact-check flags:")
+        for f in data.get("flags", []):
+            out.append(
+                f"  - [{f.get('severity', '')}/{f.get('issue', '')}] "
+                f"{f.get('claim', '')} — {f.get('explanation', '')}"
+            )
+    elif "_directed_verdict" in data:  # directed-verdict ruling
+        out.append("- " + ("Directed verdict GRANTED" if data.get("granted") else "Motion dismissed"))
+        if data.get("reasoning"):
+            out.append(f"  - {data['reasoning']}")
+        if data.get("per_defendant"):
+            out.append(f"  - Acquitted: {'; '.join(data['per_defendant'])}")
+    elif "jurors" in data:  # jury selection
         for j in data["jurors"]:
             out.append(f"- **{j.get('name','Juror')}** — {j.get('background','')} "
                        f"({j.get('disposition','')})")
-    elif "outcome" in data:  # final verdict
+    elif "outcome" in data:  # final verdict (overall, per-defendant, or per-charge)
+        if data.get("defendant_name") and data.get("charge_label"):
+            out.append(f"- **{data['defendant_name']} — {data['charge_label']}: {data['outcome']}**")
+        elif data.get("charge_label"):
+            out.append(f"- **{data['charge_label']}: {data['outcome']}**")
         tally = ", ".join(f"{k}: {v}" for k, v in data.get("tally", {}).items())
         out.append(f"- Tally: {tally}")
         out.append(f"- Unanimous: {data.get('unanimous')} · Hung: {data.get('hung')}")
@@ -65,11 +127,56 @@ def _render_structured(speaker: str, data: dict) -> list[str]:
             out.append(f"- _Reasoning:_ {data['reasoning']}")
         if data.get("sentence_or_remedy"):
             out.append(f"- _Sentence/remedy:_ {data['sentence_or_remedy']}")
+        if data.get("aggravating_factors"):
+            out.append("- _Aggravating:_ " + "; ".join(data["aggravating_factors"]))
+        if data.get("mitigating_factors"):
+            out.append("- _Mitigating:_ " + "; ".join(data["mitigating_factors"]))
+        if data.get("sentencing_range"):
+            out.append(f"- _Range:_ {data['sentencing_range']}")
+        if data.get("restitution"):
+            out.append(f"- _Restitution:_ {data['restitution']}")
+        if data.get("conditions"):
+            out.append("- _Conditions:_ " + "; ".join(data["conditions"]))
         if data.get("closing_remarks"):
             out.append(f"- _Closing:_ {data['closing_remarks']}")
-    elif "verdict" in data and "reasoning" in data:  # a single juror's vote
-        if data.get("reasoning"):
-            out.append(f"  - _{data['reasoning']}_")
+    elif "verdict" in data and "reasoning" in data:  # a juror's vote
+        def _elements(findings: list, indent: str) -> None:
+            for ef in findings or []:
+                mark = "PROVEN" if ef.get("proven") else "not proven"
+                out.append(f"{indent}- [{mark}] {ef.get('element', '')}")
+
+        def _charges(cvs: list, indent: str) -> None:
+            for cv in cvs or []:
+                out.append(f"{indent}- **{cv.get('charge_label', '?')}**: {cv.get('verdict', '')}")
+                if cv.get("reasoning"):
+                    out.append(f"{indent}  - _{cv['reasoning']}_")
+                _elements(cv.get("element_findings"), indent + "  ")
+
+        if data.get("defendant_votes"):  # multi-accused: one block per co-accused
+            for dv in data["defendant_votes"]:
+                out.append(f"  - **{dv.get('defendant_name', '?')}** — {dv.get('verdict', '')}")
+                if dv.get("charge_votes"):
+                    _charges(dv.get("charge_votes"), "    ")
+                else:
+                    if dv.get("reasoning"):
+                        out.append(f"    - _{dv['reasoning']}_")
+                    _elements(dv.get("element_findings"), "    ")
+        elif data.get("charge_votes"):  # single accused, multiple charges
+            _charges(data.get("charge_votes"), "  ")
+        else:
+            if data.get("reasoning"):
+                out.append(f"  - _{data['reasoning']}_")
+            _elements(data.get("element_findings"), "  ")
+    elif "theory" in data and "strongest_points" in data:  # counsel's case strategy
+        if data.get("theory"):
+            out.append(f"- Theory: {data['theory']}")
+        if data.get("strongest_points"):
+            out.append("- Strongest points:")
+            out.extend(f"  - {p}" for p in data["strongest_points"])
+        if data.get("opponents_best_point"):
+            out.append(f"- Opponent's best point: {data['opponents_best_point']}")
+        if data.get("rebuttal"):
+            out.append(f"- Planned rebuttal: {data['rebuttal']}")
     elif "prosecution_theory" in data:  # intake structured case
         if data.get("charges_or_claims"):
             out.append(f"- Charges/claims: {'; '.join(data['charges_or_claims'])}")
@@ -80,6 +187,9 @@ def _render_structured(speaker: str, data: dict) -> list[str]:
         if data.get("key_facts"):
             out.append("- Key facts:")
             out.extend(f"  - {f}" for f in data["key_facts"])
+        if data.get("elements"):
+            out.append("- Elements the prosecution must prove:")
+            out.extend(f"  - {e}" for e in data["elements"])
     return out
 
 
@@ -90,6 +200,8 @@ async def main() -> None:
         data["jury_size"] = args.jury
     if args.rounds is not None:
         data["argument_rounds"] = args.rounds
+    if args.style is not None:
+        data["deliberation_style"] = args.style
     case = CaseInput(**data)
 
     out_dir = ROOT / "outputs"

@@ -38,6 +38,26 @@
     <span>An <strong>AI simulation</strong> for education and entertainment — not legal advice, and not a real court, law, or outcome.</span>
   </p>
 
+  <div class="hero-wrap">
+    <section class="hero" aria-label="Introduction">
+      <video class="hero-video" autoplay muted loop playsinline preload="metadata" poster="/static/hero-poster.jpg">
+        <source src="/static/hero.mp4" type="video/mp4" />
+      </video>
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <h2 class="hero-title">Where AI argues,<br />deliberates, and rules</h2>
+        <p class="hero-sub">Bring your case. A Crown and a Defence fight it out, a jury works through
+          every legal element, and the judge delivers the verdict — streaming live.</p>
+        <a class="hero-cta" href="#caseForm">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14" /><path d="m19 12-7 7-7-7" />
+          </svg>
+          Bring your case
+        </a>
+      </div>
+    </section>
+  </div>
+
   <main class="stage">
     <!-- Intake -->
     <aside class="dock">
@@ -100,6 +120,16 @@
             <div class="field">
               <label for="f-model">Model <span class="hint">optional</span></label>
               <input id="f-model" name="model" placeholder="default: MiniMax-M2.1" autocomplete="off" />
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field-label">Jury deliberation</span>
+            <div class="segmented" role="radiogroup" aria-label="Jury deliberation style">
+              <input type="radio" id="d-dialogue" name="deliberation_style" value="dialogue" checked />
+              <label for="d-dialogue">Discussion<small>jurors debate aloud</small></label>
+              <input type="radio" id="d-poll" name="deliberation_style" value="poll" />
+              <label for="d-poll">Poll<small>quiet re-vote</small></label>
             </div>
           </div>
 

@@ -1,0 +1,21 @@
+{
+  "title": "R. v. Reyes & Cole — The Counterfeit Watch Sale",
+  "case_type": "criminal",
+  "jurisdiction": "Ontario, Canada",
+  "charge_or_claim": "Fraud over $5,000 (Criminal Code s.380) — the Crown alleges the two accused sold counterfeit 'luxury' watches as genuine, taking about $30,000 from buyers who were told the watches were authentic and carried a manufacturer warranty.",
+  "jury_size": 3,
+  "argument_rounds": 1,
+  "deliberation_rounds": 2,
+  "deliberation_style": "dialogue",
+  "qa_exchanges": 2,
+  "max_witnesses": 2,
+  "defendants": [
+    {"name": "Mateo Reyes", "role": "street vendor / seller", "account": "I sold the watches my supplier gave me and repeated what he told me — that they were authentic. I never inspected any paperwork and had no idea they might be fakes."},
+    {"name": "Dana Cole", "role": "wholesale supplier", "account": "I sourced the watches from a wholesaler whose documentation said they were genuine. I believed they were authentic and passed on the same papers I received."}
+  ],
+  "witnesses": [
+    {"name": "Priya Nair", "role": "complainant", "called_by": "prosecution", "what_they_know": "I paid $6,000 for a watch Mateo Reyes told me was a genuine Swiss luxury model with a manufacturer warranty. A jeweller later told me it was a counterfeit worth about $40."},
+    {"name": "Sam Whitfield", "role": "expert", "called_by": "defense", "what_they_know": "I am a watch appraiser. These counterfeits are high quality and the accompanying paperwork looks authentic; an ordinary seller could plausibly believe they were genuine."}
+  ],
+  "your_side": "The defence says neither accused knew the watches were counterfeit. Reyes was a vendor who repeated what his supplier told him; Cole sourced the watches with paperwork that appeared genuine. Fraud requires dishonest intent, and the Crown cannot prove either accused knew the goods were fake."
+}

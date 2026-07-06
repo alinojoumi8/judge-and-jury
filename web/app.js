@@ -40,6 +40,7 @@ function roleInfo(speaker) {
   if (s.startsWith("witness")) return { key: "witness", tag: "Witness", icon: "user" };
   if (s.startsWith("juror")) return { key: "juror", tag: "Juror", icon: "user" };
   if (s.startsWith("jury")) return { key: "juror", tag: "The Jury", icon: "scales" };
+  if (s.startsWith("fact-check")) return { key: "factcheck", tag: "Fact-Check", icon: "alert" };
   if (s.includes("clerk")) return { key: "clerk", tag: "Court Clerk", icon: "file" };
   return { key: "system", tag: "", icon: "dot" };
 }
@@ -54,9 +55,10 @@ form.addEventListener("submit", async (e) => {
     jurisdiction: fd.get("jurisdiction"),
     charge_or_claim: fd.get("charge_or_claim"),
     your_side: fd.get("your_side"),
-    jury_size: parseInt(fd.get("jury_size"), 10),
-    argument_rounds: parseInt(fd.get("argument_rounds"), 10),
+    jury_size: parseInt(fd.get("jury_size"), 10) || 3,
+    argument_rounds: parseInt(fd.get("argument_rounds"), 10) || 2,
     deliberation_rounds: parseInt(fd.get("deliberation_rounds"), 10) || 2,
+    deliberation_style: fd.get("deliberation_style") || "dialogue",
     model: (fd.get("model") || "").trim() || null,
   };
   const defendants = parseDefendants(fd.get("defendants_raw"));
@@ -133,6 +135,10 @@ async function runTrial(payload) {
       handleEvent(ev);
     }
   }
+  // If the stream closed without the server sending a 'done' event (e.g. server
+  // crash or network drop), the button stays disabled and status stays "In session".
+  // Re-enable the UI so the user can retry.
+  if (startBtn.disabled) finish("is-error", "Disconnected", "The connection was lost.");
 }
 
 function finish(cls, statusText, subText) {
@@ -221,6 +227,27 @@ function typewriter(elBody, text) {
   }, 16);
 }
 
+// Fact-check flags on a statement (anti-hallucination) — an amber warning card.
+function renderGrounding(d) {
+  const items = (d.flags || []).map((f) =>
+    `<li class="fc-flag fc-${escapeHtml(f.severity || "minor")}">` +
+      `<span class="fc-sev">${escapeHtml((f.severity || "").toUpperCase())}</span>` +
+      `<span class="fc-issue">${escapeHtml(f.issue || "")}</span>` +
+      `<span class="fc-claim">${escapeHtml(f.claim || "")}</span>` +
+      (f.explanation ? `<div class="fc-exp">${escapeHtml(f.explanation)}</div>` : "") +
+    `</li>`
+  ).join("");
+  const row = el("div", "card-row r-factcheck");
+  row.innerHTML =
+    `<span class="avatar r-factcheck">${svg("alert")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">Fact-Check</span>` +
+        `<span class="role-tag">${(d.flags || []).length} flag(s)</span></div>` +
+      `<ul class="fc-list">${items}</ul>` +
+    `</div>`;
+  append(row);
+}
+
 function renderError(msg) {
   append(el("div", "error-card",
     `${svg("alert", 1.7)}<div class="body">${escapeHtml(msg)}</div>`));
@@ -228,6 +255,13 @@ function renderError(msg) {
 
 function renderStructured(ev) {
   const d = ev.data || {};
+  if (d._grounding) return renderGrounding(d);
+  if (d._cast) return renderCast(d);
+  if (d._directed_verdict) return renderDirectedVerdict(d);
+  if (d._record) return renderRecord(d.agreed_record || {});
+  if (d._straw) return renderStraw(d);
+  if (d._movement) return renderMovement(d);
+  if (d._strategy) return renderStrategy(ev.speaker, d);
   if (d.charges_or_claims) return renderCase(ev.speaker, d);
   if (d.jurors) return renderJury(ev.speaker, d.jurors);
   if (d.objection_ruling) return renderObjection(d);
@@ -235,6 +269,27 @@ function renderStructured(ev) {
   if (d.sentence_or_remedy !== undefined && d.verdict_acknowledgement !== undefined) return renderRuling(ev.speaker, d);
   if (d.verdict && d.juror_name) return renderVote(ev.speaker, d);
   addStatement(ev.speaker, ev.content || JSON.stringify(d));
+}
+
+// The immutable Agreed Record — the trial's source of truth, shown after intake.
+function renderRecord(rec) {
+  const list = (label, arr) => (Array.isArray(arr) && arr.length)
+    ? `<div class="kv" style="margin-top:6px"><b>${escapeHtml(label)}</b></div>` +
+      `<ul class="facts">${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`
+    : "";
+  const row = el("div", "card-row r-clerk");
+  row.innerHTML =
+    `<span class="avatar r-clerk">${svg("file")}</span>` +
+    `<div class="bubble case-panel">` +
+      `<div class="who"><span class="name">The Agreed Record</span>` +
+        `<span class="role-tag">Source of truth</span></div>` +
+      list("Parties", rec.parties) +
+      list("Key figures", rec.figures) +
+      list("Key dates", rec.dates) +
+      list("Admissible facts", rec.admissible_facts) +
+      list("Authorities on record", (rec.authorities && rec.authorities.length) ? rec.authorities : ["none"]) +
+    `</div>`;
+  append(row);
 }
 
 function renderCase(speaker, d) {
@@ -248,6 +303,49 @@ function renderCase(speaker, d) {
       (tags ? `<div class="tags">${tags}</div>` : "") +
       (d.summary ? `<div class="kv" style="margin-top:6px">${escapeHtml(d.summary)}</div>` : "") +
       (facts ? `<div class="kv" style="margin-top:8px"><b>Key facts</b></div><ul class="facts">${facts}</ul>` : "") +
+    `</div>`;
+  append(row);
+}
+
+// The auto-cast personalities for the non-jury roles (counsel, bench, witnesses).
+function renderCast(d) {
+  const chip = (label, p, key) =>
+    (p && (p.name || p.style))
+      ? `<div class="juror-chip"><span class="mini r-${key}">${svg("user")}</span>` +
+        `<div><b>${escapeHtml(label)} · ${escapeHtml(p.name || "")}</b>` +
+        `<span>${escapeHtml(p.background || "")}${p.style ? " · " + escapeHtml(p.style) : ""}</span></div></div>`
+      : "";
+  const wits = (d.witnesses || []).map((w) =>
+    `<div class="juror-chip"><span class="mini r-witness">${svg("user")}</span>` +
+    `<div><b>${escapeHtml(w.name || "Witness")}</b><span>${escapeHtml(w.style || "")}</span></div></div>`
+  ).join("");
+  const row = el("div", "card-row r-clerk");
+  row.innerHTML =
+    `<span class="avatar r-clerk">${svg("users")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">The Cast</span><span class="role-tag">counsel &amp; bench</span></div>` +
+      `<div class="jurybox">` +
+        chip("Crown", d.crown, "crown") + chip("Defence", d.defense, "defense") + chip("Judge", d.judge, "judge") +
+      `</div>` +
+      (wits ? `<div class="kv" style="margin-top:8px"><b>Witnesses</b></div><div class="jurybox">${wits}</div>` : "") +
+    `</div>`;
+  append(row);
+}
+
+// A counsel's pre-trial case theory (persistent strategy + planned rebuttal).
+function renderStrategy(speaker, d) {
+  const r = roleInfo(speaker);
+  const pts = (d.strongest_points || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+  const row = el("div", `card-row r-${r.key}`);
+  row.innerHTML =
+    `<span class="avatar r-${r.key}">${svg(r.icon)}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">${escapeHtml(speaker)}</span>` +
+        `<span class="role-tag">Case theory</span></div>` +
+      (d.theory ? `<div class="body">${escapeHtml(d.theory)}</div>` : "") +
+      (pts ? `<div class="kv" style="margin-top:6px"><b>Strongest points</b></div><ul class="facts">${pts}</ul>` : "") +
+      (d.opponents_best_point ? `<div class="kv" style="margin-top:6px"><b>Opponent's best point:</b> ${escapeHtml(d.opponents_best_point)}</div>` : "") +
+      (d.rebuttal ? `<div class="kv"><b>Planned rebuttal:</b> ${escapeHtml(d.rebuttal)}</div>` : "") +
     `</div>`;
   append(row);
 }
@@ -274,26 +372,80 @@ function voteIsClear(vote, verdict) {
   return vote ? vote === "acquit" : /\bnot\b|acquit|innocent/i.test(verdict || "");
 }
 
+// A juror's per-element findings, shown as a ✓/✗ checklist under their reasoning.
+function elementList(findings) {
+  if (!Array.isArray(findings) || !findings.length) return "";
+  const items = findings.map((ef) =>
+    `<li class="el ${ef.proven ? "el-ok" : "el-no"}">` +
+    `<span class="el-mark">${ef.proven ? "✓" : "✗"}</span>` +
+    `<span>${escapeHtml(ef.element || "")}</span></li>`
+  ).join("");
+  return `<ul class="elements">${items}</ul>`;
+}
+
+// A juror's per-charge votes (multi-charge), each a badge + reasoning + elements.
+function chargeVotesBlock(cvs) {
+  if (!Array.isArray(cvs) || !cvs.length) return "";
+  return cvs.map((cv) =>
+    `<div class="cv"><b>${escapeHtml(cv.charge_label || "")}:</b> ` +
+    `<span class="vote-badge ${voteIsClear(cv.vote, cv.verdict) ? "vote-clear" : "vote-guilty"}">${escapeHtml(cv.verdict)}</span> ` +
+    `${escapeHtml(cv.reasoning || "")}${elementList(cv.element_findings)}</div>`
+  ).join("");
+}
+
 function renderVote(speaker, d) {
   const name = speaker.includes("—") ? speaker.split("—")[1].trim() : (d.juror_name || "Juror");
   const row = el("div", "card-row r-juror");
-  let badges;
+  let badges, body;
   if (Array.isArray(d.defendant_votes) && d.defendant_votes.length) {
-    // Multi-defendant: one badge per co-accused.
+    // Multi-defendant: one badge per co-accused; per-charge breakdown if present.
     badges = d.defendant_votes.map((dv) =>
       `<span class="vote-badge ${voteIsClear(dv.vote, dv.verdict) ? "vote-clear" : "vote-guilty"}">` +
       `${escapeHtml(dv.defendant_name)}: ${escapeHtml(dv.verdict)}</span>`
     ).join(" ");
+    body = d.defendant_votes.map((dv) =>
+      `<div class="dv"><b>${escapeHtml(dv.defendant_name)}.</b> ` +
+      ((Array.isArray(dv.charge_votes) && dv.charge_votes.length)
+        ? chargeVotesBlock(dv.charge_votes)
+        : `${escapeHtml(dv.reasoning || "")}${elementList(dv.element_findings)}`) +
+      `</div>`
+    ).join("");
+  } else if (Array.isArray(d.charge_votes) && d.charge_votes.length) {
+    // Single accused, multiple charges.
+    badges = d.charge_votes.map((cv) =>
+      `<span class="vote-badge ${voteIsClear(cv.vote, cv.verdict) ? "vote-clear" : "vote-guilty"}">` +
+      `${escapeHtml(cv.charge_label)}: ${escapeHtml(cv.verdict)}</span>`
+    ).join(" ");
+    body = chargeVotesBlock(d.charge_votes);
   } else {
     badges =
       `<span class="vote-badge ${voteIsClear(d.vote, d.verdict) ? "vote-clear" : "vote-guilty"}">${escapeHtml(d.verdict)}</span>` +
       `<span class="conf">${d.confidence}/10</span>`;
+    body = escapeHtml(d.reasoning || "") + elementList(d.element_findings);
   }
   row.innerHTML =
     `<span class="avatar r-juror">${svg("user")}</span>` +
     `<div class="bubble">` +
       `<div class="who"><span class="name">${escapeHtml(name)}</span>${badges}</div>` +
-      `<div class="body">${escapeHtml(d.reasoning || "")}</div>` +
+      `<div class="body">${body}</div>` +
+    `</div>`;
+  append(row);
+}
+
+// The judge's ruling on a defence directed-verdict (no-evidence) motion.
+function renderDirectedVerdict(d) {
+  const granted = !!d.granted;
+  const row = el("div", "card-row r-judge");
+  row.innerHTML =
+    `<span class="avatar r-judge">${svg("gavel")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">The Bench</span>` +
+        `<span class="vote-badge ${granted ? "vote-clear" : "vote-guilty"}">` +
+        `${granted ? "DIRECTED VERDICT" : "MOTION DISMISSED"}</span></div>` +
+      (d.reasoning ? `<div class="body">${escapeHtml(d.reasoning)}</div>` : "") +
+      ((Array.isArray(d.per_defendant) && d.per_defendant.length)
+        ? `<div class="kv" style="margin-top:6px"><b>Acquitted:</b> ${escapeHtml(d.per_defendant.join("; "))}</div>`
+        : "") +
     `</div>`;
   append(row);
 }
@@ -312,13 +464,45 @@ function renderObjection(d) {
   append(row);
 }
 
+// The private straw poll taken before discussion (reuses the verdict tally look).
+function renderStraw(d) {
+  const cols = Object.entries(d.tally || {}).map(([k, n]) =>
+    `<div class="col"><div class="num">${n}</div><div class="lbl">${escapeHtml(k)}</div></div>`
+  ).join("");
+  const n = el("div", "spotlight");
+  n.innerHTML =
+    `<div class="spot-head">${svg("scales", 1.7)} Straw Poll · before discussion</div>` +
+    `<div class="tally">${cols}</div>`;
+  append(n);
+}
+
+// How the room moved between the straw poll and the final vote.
+function renderMovement(d) {
+  const line = (t) => Object.entries(t || {}).map(([k, n]) => `${escapeHtml(k)}: ${n}`).join(" · ");
+  const flips = (d.flips || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+  const row = el("div", "card-row r-juror");
+  row.innerHTML =
+    `<span class="avatar r-juror">${svg("users")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">How the room moved</span></div>` +
+      `<div class="kv"><b>Straw:</b> ${line(d.initial_tally)} &nbsp;→&nbsp; <b>Final:</b> ${line(d.final_tally)}</div>` +
+      (flips
+        ? `<div class="kv" style="margin-top:6px"><b>Jurors who moved</b></div><ul class="facts">${flips}</ul>`
+        : `<div class="kv" style="margin-top:6px">No jurors changed their vote.</div>`) +
+    `</div>`;
+  append(row);
+}
+
 function renderVerdict(d) {
   const cols = Object.entries(d.tally || {}).map(([k, n]) => {
     const win = String(k).toLowerCase() === String(d.outcome).toLowerCase();
     return `<div class="col ${win ? "win" : ""}"><div class="num">${n}</div><div class="lbl">${escapeHtml(k)}</div></div>`;
   }).join("");
   const n = el("div", "spotlight");
-  const title = d.defendant_name ? `The Verdict — ${escapeHtml(d.defendant_name)}` : "The Verdict";
+  let title = "The Verdict";
+  if (d.charge_label && d.defendant_name) title = `${escapeHtml(d.defendant_name)} · ${escapeHtml(d.charge_label)}`;
+  else if (d.charge_label) title = `The Verdict — ${escapeHtml(d.charge_label)}`;
+  else if (d.defendant_name) title = `The Verdict — ${escapeHtml(d.defendant_name)}`;
   n.innerHTML =
     `<div class="spot-head">${svg("scales", 1.7)} ${title}</div>` +
     `<div class="verdict-outcome">${escapeHtml(d.outcome)}</div>` +
@@ -331,6 +515,10 @@ function renderRuling(speaker, d) {
   const block = (cls, k, v) => v
     ? `<div class="ruling-block ${cls}">${k ? `<div class="rk">${k}</div>` : ""}<div class="rv">${escapeHtml(v)}</div></div>`
     : "";
+  const listBlock = (k, arr) => (Array.isArray(arr) && arr.length)
+    ? `<div class="ruling-block"><div class="rk">${k}</div>` +
+      `<ul class="facts">${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`
+    : "";
   const n = el("div", "spotlight");
   n.innerHTML =
     `<div class="spot-head">${svg("gavel", 1.7)} The Bench Rules</div>` +
@@ -338,6 +526,11 @@ function renderRuling(speaker, d) {
       block("", "Verdict acknowledged", d.verdict_acknowledgement) +
       block("", "Reasoning", d.reasoning) +
       block("sentence", "Sentence / Remedy", d.sentence_or_remedy) +
+      listBlock("Aggravating factors", d.aggravating_factors) +
+      listBlock("Mitigating factors", d.mitigating_factors) +
+      block("", "Sentencing range", d.sentencing_range) +
+      block("", "Restitution", d.restitution) +
+      listBlock("Conditions", d.conditions) +
       block("remarks", "", d.closing_remarks) +
     `</div>`;
   append(n);

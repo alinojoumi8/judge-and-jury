@@ -1,0 +1,12 @@
+{
+  "title": "R. v. Harding — Break-and-Enter + Mischief (per-charge verification)",
+  "case_type": "criminal",
+  "jurisdiction": "Ontario, Canada",
+  "charge_or_claim": "Two charges: (1) Break and enter a dwelling (Criminal Code s.348) — the Crown says the accused forced a window and entered the home; and (2) Mischief over $5,000 (Criminal Code s.430) — that once inside he smashed furniture and fixtures causing more than $5,000 damage. The accused admits he was inside the house but says the door was unlocked and that he caused no significant damage.",
+  "jury_size": 3,
+  "argument_rounds": 1,
+  "deliberation_rounds": 2,
+  "deliberation_style": "poll",
+  "grounding_check": true,
+  "your_side": "The defence concedes the accused entered the home but disputes both charges as framed: there was no 'break' because a side door was left unlocked, so the break-and-enter is not made out; and the damage was minor scuffing, far below the $5,000 threshold for mischief over $5,000. The Crown can prove presence but not a forced entry and not damage over $5,000."
+}

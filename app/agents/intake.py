@@ -21,8 +21,37 @@ these keys:
   "summary": "a neutral 2-4 sentence summary of the dispute",
   "key_facts": ["the most important facts, stated neutrally"],
   "prosecution_theory": "how the Crown / plaintiff is likely to frame the case",
-  "defense_theory": "how the defense is likely to frame the case"
+  "defense_theory": "how the defense is likely to frame the case",
+  "elements": ["each essential legal element the prosecution/plaintiff must prove to win"],
+  "charges": [
+    {"label": "the charge/count name, e.g. 'Fraud over $5,000 (s.380)'", "elements": ["that charge's own elements"]}
+  ],
+  "agreed_record": {
+    "parties": ["canonical full name of each party / accused / key person named"],
+    "figures": ["each key number as 'label: value', e.g. 'amount raised: $250,000'"],
+    "dates": ["each key date as 'label: date'"],
+    "admissible_facts": ["the concrete facts both sides must work from, stated neutrally"],
+    "authorities": ["ONLY statutes or cases the input itself names; else leave empty"]
+  }
 }
+
+For "elements", list the actual elements of the offence or cause of action, each as
+a short phrase the jury can decide YES/NO on — e.g. for criminal fraud: "a dishonest
+act (deceit, falsehood or other fraudulent means)", "deprivation or real risk of
+deprivation caused by that act", "the accused's SUBJECTIVE knowledge that the act
+was dishonest", "the accused's subjective knowledge that deprivation could follow".
+Tailor them to the specific charge(s)/claim(s) and jurisdiction. Give 2-5 elements.
+
+For "charges": if there is MORE THAN ONE charge or count (e.g. fraud AND possession
+of proceeds), list EACH one with its OWN elements — the jury will return a separate
+verdict on each. For a single charge, "charges" may be a one-element list or empty;
+keep "elements" as the elements of the primary charge.
+
+For "agreed_record" — the immutable source of truth for the whole trial — populate
+each list ONLY from facts, figures, dates, parties, and authorities that appear in
+the client's account and the charge. Do NOT add anything not stated in the input.
+"authorities" lists ONLY statutes or case citations the input itself names; if the
+input cites none, return an empty list — never invent case law.
 """
 
 

@@ -1,0 +1,33 @@
+{
+  "title": "R. v. Reyes & Cole — Counterfeit Watches (pinned-persona A/B)",
+  "case_type": "criminal",
+  "jurisdiction": "Ontario, Canada",
+  "charge_or_claim": "Fraud over $5,000 (Criminal Code s.380) — the Crown alleges the two accused sold counterfeit 'luxury' watches as genuine, taking about $30,000 from buyers who were told the watches were authentic and carried a manufacturer warranty.",
+  "jury_size": 3,
+  "argument_rounds": 1,
+  "deliberation_rounds": 2,
+  "deliberation_style": "poll",
+  "qa_exchanges": 2,
+  "max_witnesses": 2,
+  "personas": true,
+  "_AB_NOTE": "Flip the two pinned personas below (swap their styles, or make the Crown meek and the Defence fierce) and re-run to see how advocacy STYLE alone moves the same jury on the same facts. Judge + witnesses stay auto-cast.",
+  "crown_persona": {
+    "name": "Vincent Hale, KC",
+    "background": "a feared senior Crown with a reputation for theatrical jury addresses",
+    "style": "aggressive and relentless; hammers the jury with rhetorical questions, presses every inference hard, and treats any doubt as an excuse"
+  },
+  "defense_persona": {
+    "name": "Maggie Ellsworth",
+    "background": "a beloved small-town defence lawyer who has never lost a jury's trust",
+    "style": "warm, folksy and plain-spoken; slows everything down, talks to the jury like neighbours, and gently keeps returning to reasonable doubt"
+  },
+  "defendants": [
+    {"name": "Mateo Reyes", "role": "street vendor / seller", "account": "I sold the watches my supplier gave me and repeated what he told me — that they were authentic. I never inspected paperwork and had no idea they might be fakes."},
+    {"name": "Dana Cole", "role": "wholesale supplier", "account": "I sourced the watches from a wholesaler whose documentation said they were genuine. I believed they were authentic and passed on the same papers I received."}
+  ],
+  "witnesses": [
+    {"name": "Priya Nair", "role": "complainant", "called_by": "prosecution", "what_they_know": "I paid $6,000 for a watch Mateo Reyes told me was a genuine Swiss luxury model with a manufacturer warranty. A jeweller later told me it was a counterfeit worth about $40."},
+    {"name": "Sam Whitfield", "role": "expert", "called_by": "defense", "what_they_know": "I am a watch appraiser. These counterfeits are high quality and the accompanying paperwork looks authentic; an ordinary seller could plausibly believe they were genuine."}
+  ],
+  "your_side": "The defence says neither accused knew the watches were counterfeit. Fraud requires dishonest intent, and the Crown cannot prove either accused knew the goods were fake — they relied in good faith on their suppliers and on documentation that appeared genuine."
+}

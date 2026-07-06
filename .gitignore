@@ -20,4 +20,6 @@ outputs/
 
 # Private case fixtures (real matter) — kept local, never published.
 # The generic samples/example_case.json IS tracked so the runner has a demo default.
-samples/smart_prime_case*
+# Broadened from smart_prime_case* to catch every real-matter fixture (fresh,
+# grounded, trial_12jury, …), which the narrower pattern let slip through.
+samples/smart_prime_*
