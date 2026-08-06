@@ -7,18 +7,26 @@ from __future__ import annotations
 
 from app.llm_utils import contains_cjk, extract_json, parse_json_lenient, strip_think
 from app.orchestrator import (
+    _align_findings,
     _all_settled,
     _charge_directives,
     _defendant_roster,
     _derive_vote,
     _directed_acquittal,
+    _element_proven,
     _exam_kinds,
     _fallback_cast,
+    _has_conviction,
     _merge_reports,
+    _modal_ballot,
     _normalize_vote,
     _persona_text,
+    _pick_by_label,
+    _projection_gaps,
+    _proof_threshold,
     _record_block,
     _settled_with_conviction,
+    _similarity,
     _straw_movement,
     _tally,
     _tally_signature,
@@ -524,3 +532,439 @@ def test_caseinput_accepts_pinned_personas():
     assert c.judge_persona is None  # unpinned roles stay None and get auto-cast
     # A pinned persona renders to non-empty threading text.
     assert "K. Bayly" in _persona_text(c.crown_persona, "the Crown")
+
+
+# ---------------------------------------------------------------------------
+# Abstention: a juror whose ballot never arrived must not vote by default
+# ---------------------------------------------------------------------------
+def test_abstention_is_excluded_not_counted_as_acquittal():
+    # 3 convict + 1 juror the model failed on. Counting that failure as an acquittal
+    # (the old behaviour) would hang a criminal jury on nothing at all.
+    votes = _jurors(3, 0) + [
+        JurorVote(juror_name="Broken", verdict="(no ballot)", vote="acquit", abstained=True)
+    ]
+    v = _tally_votes(votes, "criminal")
+    assert v.outcome == "Guilty"
+    assert v.hung is False and v.unanimous is True
+    assert v.abstentions == 1
+    assert v.tally == {"Guilty": 3, "Not Guilty": 0}
+    assert "excluded" in v.dissent_summary
+
+
+def test_all_abstained_yields_no_verdict():
+    votes = [JurorVote(juror_name=f"J{i}", abstained=True) for i in range(3)]
+    v = _tally_votes(votes, "criminal")
+    assert v.hung is True and v.abstentions == 3
+    assert "no ballot" in v.outcome.lower() or "no verdict" in v.outcome.lower()
+
+
+def test_abstention_carries_through_defendant_projection():
+    defs = [Defendant(name="A"), Defendant(name="B")]
+    votes = _jurors(2, 0) + [JurorVote(juror_name="Broken", abstained=True)]
+    v = _tally_votes_multi(votes, defs, "criminal")
+    assert all(d.abstentions == 1 and d.outcome == "Guilty" for d in v.per_defendant)
+
+
+def test_abstention_registers_in_the_tally_signature():
+    # An abstention differs from an acquittal, so a juror who recovers on the next
+    # round must read as movement rather than as a stalled room.
+    out = [JurorVote(juror_name="J", abstained=True)]
+    back = [JurorVote(juror_name="J", vote="acquit", verdict="not guilty")]
+    assert _tally_signature(out) != _tally_signature(back)
+
+
+# ---------------------------------------------------------------------------
+# Label matching: paraphrased names/charges must still find their entry
+# ---------------------------------------------------------------------------
+def test_similarity_matches_paraphrase_but_not_unrelated():
+    assert _similarity("Marlowe", "Dana Marlowe") > 0.45
+    assert _similarity("Fraud over $5,000", "Fraud over $5,000 (s.380(1)(a))") > 0.45
+    assert _similarity("Fraud over $5,000", "Possession of proceeds of crime") < 0.45
+
+
+def test_pick_by_label_tolerates_short_forms():
+    entries = [DefendantVote(defendant_name="Dana Marlowe", vote="convict")]
+    assert _pick_by_label(entries, "defendant_name", "Marlowe") is entries[0]
+    assert _pick_by_label(entries, "defendant_name", "Sam Vance") is None
+
+
+def test_defendant_projection_matches_shortened_name():
+    # The juror wrote "Marlowe"; the roster says "Dana Marlowe". Exact
+    # matching silently fell back to the top-level acquit and lost the conviction.
+    defs = [Defendant(name="Dana Marlowe")]
+    votes = [JurorVote(
+        juror_name="J", verdict="not guilty", vote="acquit",
+        defendant_votes=[DefendantVote(defendant_name="Marlowe", verdict="guilty", vote="convict")],
+    )]
+    assert _tally_votes_multi(votes, defs, "criminal").per_defendant[0].outcome == "Guilty"
+
+
+def test_charge_projection_matches_label_with_extra_citation():
+    charges = [Charge(label="Fraud over $5,000 (s.380(1)(a))")]
+    votes = [JurorVote(
+        juror_name="J", verdict="not guilty", vote="acquit",
+        charge_votes=[ChargeVote(charge_label="Fraud over $5,000", verdict="guilty", vote="convict")],
+    )]
+    v = _tally(votes, [Defendant(name="X")], charges + [Charge(label="Possession")], "criminal")
+    out = {cv.charge_label: cv.outcome for cv in v.per_charge}
+    assert out["Fraud over $5,000 (s.380(1)(a))"] == "Guilty"
+    assert out["Possession"] == "Not Guilty"  # genuinely absent -> top-level fallback
+
+
+def test_projection_gaps_report_only_genuine_misses():
+    defs = [Defendant(name="Alpha Adams"), Defendant(name="Beta Brooks")]
+    charges = [Charge(label="Fraud"), Charge(label="Theft")]
+    v = JurorVote(juror_name="J", defendant_votes=[
+        DefendantVote(defendant_name="Adams", charge_votes=[
+            ChargeVote(charge_label="Fraud"), ChargeVote(charge_label="Theft")])
+    ])
+    gaps = _projection_gaps([v], defs, charges)
+    assert len(gaps) == 1 and "Beta Brooks" in gaps[0]  # "Adams" matched; Brooks absent
+
+
+def test_projection_gaps_ignore_abstentions():
+    defs = [Defendant(name="A"), Defendant(name="B")]
+    v = JurorVote(juror_name="J", abstained=True)
+    assert _projection_gaps([v], defs, [Charge(label="only")]) == []
+
+
+# ---------------------------------------------------------------------------
+# Element coverage: partial or invented findings must not decide the verdict
+# ---------------------------------------------------------------------------
+def test_align_findings_maps_reworded_elements():
+    required = [
+        "the accused's subjective knowledge that the act was dishonest",
+        "deprivation caused by the dishonest act",
+    ]
+    findings = [
+        ElementFinding(element="Deprivation (loss or risk of loss) caused to the victim", proven=True),
+        ElementFinding(element="The accused's subjective knowledge the act was dishonest", proven=False),
+    ]
+    aligned = _align_findings(required, findings)
+    assert aligned[0] is findings[1] and aligned[1] is findings[0]
+
+
+def test_align_findings_positional_fallback_when_nothing_matches():
+    required = ["alpha one", "beta two"]
+    findings = [ElementFinding(element="", proven=True), ElementFinding(element="", proven=False)]
+    assert _align_findings(required, findings) == findings
+
+
+def test_align_findings_fills_holes_from_leftovers_in_order():
+    # One element matched by wording, one reworded past recognition. The leftover
+    # exactly fills the hole, so the juror did address it — reading that as
+    # "unaddressed" would acquit on a wording quirk.
+    required = ["deprivation caused to the victim", "subjective knowledge of dishonesty"]
+    matched = ElementFinding(element="deprivation caused to the victim", proven=True)
+    reworded = ElementFinding(element="he knew perfectly well what he was doing", proven=True)
+    aligned = _align_findings(required, [matched, reworded])
+    assert aligned == [matched, reworded]
+    assert _derive_vote([matched, reworded], "convict", "guilty", required=required) == "convict"
+
+
+def test_align_findings_still_reports_a_genuinely_missing_element():
+    required = ["dishonest act", "deprivation", "subjective knowledge"]
+    findings = [ElementFinding(element="dishonest act", proven=True)]
+    aligned = _align_findings(required, findings)
+    assert aligned[0] is findings[0]
+    assert aligned[1] is None and aligned[2] is None  # two leftovers short — real gaps
+
+
+def test_unaddressed_element_acquits_under_strict_coverage():
+    required = ["dishonest act", "deprivation", "subjective knowledge of dishonesty"]
+    findings = [
+        ElementFinding(element="dishonest act", proven=True),
+        ElementFinding(element="deprivation", proven=True),
+    ]  # never addressed knowledge — the burden is the Crown's, so that is not proven
+    assert _derive_vote(findings, "convict", "guilty", required=required, strict=True) == "acquit"
+    assert _derive_vote(findings, "convict", "guilty", required=required, strict=False) == "convict"
+
+
+def test_invented_extra_element_does_not_acquit():
+    required = ["dishonest act", "deprivation"]
+    findings = [
+        ElementFinding(element="dishonest act", proven=True),
+        ElementFinding(element="deprivation", proven=True),
+        ElementFinding(element="the accused acted alone", proven=False),  # not an element
+    ]
+    assert _derive_vote(findings, "convict", "guilty", required=required) == "convict"
+
+
+def test_derive_vote_without_required_keeps_old_behaviour():
+    findings = [ElementFinding(element="a", proven=True), ElementFinding(element="b", proven=False)]
+    assert _derive_vote(findings, "convict", "guilty") == "acquit"
+
+
+# ---------------------------------------------------------------------------
+# Calibrated standard of proof
+# ---------------------------------------------------------------------------
+def test_proof_threshold_defaults_by_case_type():
+    crim = CaseInput(title="t", charge_or_claim="c", your_side="s", case_type="criminal")
+    civ = CaseInput(title="t", charge_or_claim="c", your_side="s", case_type="civil")
+    assert _proof_threshold(crim) == 90 and _proof_threshold(civ) == 51
+    pinned = CaseInput(title="t", charge_or_claim="c", your_side="s", proof_threshold=75)
+    assert _proof_threshold(pinned) == 75
+
+
+def test_element_proven_downgrades_below_threshold_only():
+    high = ElementFinding(element="e", proven=True, probability=95)
+    low = ElementFinding(element="e", proven=True, probability=60)
+    unsure = ElementFinding(element="e", proven=False, probability=99)
+    assert _element_proven(high, 90) is True
+    assert _element_proven(low, 90) is False       # own number fails the standard
+    assert _element_proven(low, None) is True      # calibration off -> boolean stands
+    assert _element_proven(unsure, 90) is False    # never upgrades a "not proven"
+
+
+def test_missing_probability_falls_back_to_the_boolean():
+    f = ElementFinding(element="e", proven=True)
+    assert _element_proven(f, 90) is True
+
+
+def test_calibration_flips_a_verdict_on_a_shaky_element():
+    required = ["dishonest act", "subjective knowledge"]
+    findings = [
+        ElementFinding(element="dishonest act", proven=True, probability=98),
+        ElementFinding(element="subjective knowledge", proven=True, probability=65),
+    ]
+    assert _derive_vote(findings, "convict", "guilty", required=required, threshold=None) == "convict"
+    assert _derive_vote(findings, "convict", "guilty", required=required, threshold=90) == "acquit"
+    # A civil case takes the same ballot on the balance of probabilities.
+    assert _derive_vote(findings, "convict", "liable", required=required, threshold=51) == "convict"
+
+
+# ---------------------------------------------------------------------------
+# Self-consistency: the modal ballot across independent samples
+# ---------------------------------------------------------------------------
+def _ballot(vote: str, conf: int = 5) -> JurorVote:
+    return JurorVote(
+        juror_name="J", vote=vote, confidence=conf,
+        verdict=("guilty" if vote == "convict" else "not guilty"),
+    )
+
+
+def test_modal_ballot_takes_the_majority_position():
+    chosen = _modal_ballot([_ballot("acquit"), _ballot("convict"), _ballot("acquit")])
+    assert chosen.vote == "acquit"
+    assert chosen.sample_agreement == round(2 / 3, 3)
+
+
+def test_modal_ballot_unanimous_samples_report_full_agreement():
+    chosen = _modal_ballot([_ballot("convict"), _ballot("convict")])
+    assert chosen.vote == "convict" and chosen.sample_agreement == 1.0
+
+
+def test_modal_ballot_tie_breaks_on_confidence():
+    chosen = _modal_ballot([_ballot("acquit", 3), _ballot("convict", 9)])
+    assert chosen.vote == "convict"
+
+
+def test_modal_ballot_single_sample_is_untouched():
+    only = _ballot("acquit")
+    assert _modal_ballot([only]) is only and only.sample_agreement == 1.0
+
+
+def test_modal_ballot_is_charge_aware():
+    # Two samples split on Possession only; the modal ballot must keep both charges.
+    def b(possession: str) -> JurorVote:
+        return JurorVote(juror_name="J", charge_votes=[
+            ChargeVote(charge_label="Fraud", vote="convict"),
+            ChargeVote(charge_label="Possession", vote=possession),
+        ])
+    chosen = _modal_ballot([b("acquit"), b("acquit"), b("convict")])
+    picks = {cv.charge_label: cv.vote for cv in chosen.charge_votes}
+    assert picks == {"Fraud": "convict", "Possession": "acquit"}
+
+
+# ---------------------------------------------------------------------------
+# Ruling guard: no sentencing where nothing was proved
+# ---------------------------------------------------------------------------
+def test_has_conviction_across_every_axis():
+    acquitted = _tally_votes(_jurors(0, 3), "criminal")
+    assert _has_conviction(acquitted, "Guilty") is False
+    convicted = _tally_votes(_jurors(3, 0), "criminal")
+    assert _has_conviction(convicted, "Guilty") is True
+
+
+def test_has_conviction_finds_a_lone_guilty_count():
+    charges = [Charge(label="Fraud"), Charge(label="Possession")]
+    votes = [_charge_ballot(f"J{i}", {"Fraud": "convict", "Possession": "acquit"}) for i in range(3)]
+    v = _tally(votes, [Defendant(name="X")], charges, "criminal")
+    # Headline outcome mirrors the whole ballot, but one count did convict.
+    assert _has_conviction(v, "Guilty") is True
+
+
+def test_has_conviction_false_when_every_count_acquits():
+    charges = [Charge(label="Fraud"), Charge(label="Possession")]
+    votes = [_charge_ballot(f"J{i}", {"Fraud": "acquit", "Possession": "acquit"}) for i in range(3)]
+    v = _tally(votes, [Defendant(name="X")], charges, "criminal")
+    assert _has_conviction(v, "Guilty") is False
+
+
+# ---------------------------------------------------------------------------
+# Reliability settings on CaseInput
+# ---------------------------------------------------------------------------
+def test_compare_trials_extracts_verdicts_from_a_transcript(tmp_path):
+    # The comparison tool is how "is this more reliable?" gets answered, so its
+    # parser needs to survive the transcript format it reads.
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("ct", root / "scripts" / "compare_trials.py")
+    ct = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ct)
+
+    t = tmp_path / "trial_x.md"
+    t.write_text(
+        "# Trial transcript\n"
+        "**System:** Trial configuration.\n"
+        "- Model: `MiniMax-M3` · jury 12\n"
+        "## The Jury Deliberates\n"
+        "- Ballots counted: 11/12 (deciding round 2)\n"
+        "- Mean juror self-agreement: 86% over 3 samples\n"
+        "- **this line is outside the verdict section: Guilty**\n"
+        "## The Verdict\n"
+        "- **Ann Adams — Fraud over $5,000 (s.380(1)(a)): Not Guilty**\n"
+        "- **Ann Adams — Possession of proceeds of crime (s.354(1)): Guilty**\n"
+        "## The Judge's Ruling\n"
+        "- **should be ignored too: Hung jury**\n",
+        encoding="utf-8",
+    )
+    got = ct._parse(t)
+    assert got["model"] == "MiniMax-M3"
+    assert got["ballots"] == "11/12" and got["agreement"] == "86%"
+    assert got["verdicts"] == {
+        "Ann Adams — Fraud over $5,000 (s.380(1)(a))": "Not Guilty",
+        "Ann Adams — Possession of proceeds of crime (s.354(1))": "Guilty",
+    }
+
+
+def _compare_module():
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("ct_q", root / "scripts" / "compare_trials.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_compare_matches_the_same_question_across_wording_drift():
+    # The intake clerk names the same count differently run to run. Treating those
+    # as different questions reports two identical verdicts as total disagreement.
+    ct = _compare_module()
+    a = "Sam Vance — Fraud over $5,000 (s.380(1)(a)) — party-liability basis (s.21)"
+    b = "Sam Vance — Fraud over $5,000 (s.380(1)(a)), via party liability under s.21"
+    assert ct._same_question(a, b) is True
+
+
+def test_compare_keeps_different_accused_and_charges_apart():
+    ct = _compare_module()
+    marlowe_fraud = "Dana Marlowe — Fraud over $5,000 (s.380(1)(a)) — party-liability basis (s.21)"
+    vance_fraud = "Sam Vance — Fraud over $5,000 (s.380(1)(a)) — party-liability basis (s.21)"
+    vance_poss = "Sam Vance — Possession of proceeds of crime (s.354(1)) — party-liability basis (s.21)"
+    # Same charge, different accused.
+    assert ct._same_question(marlowe_fraud, vance_fraud) is False
+    # Same accused, different charge — they share most of their boilerplate wording,
+    # so the statute number has to be what tells them apart.
+    assert ct._same_question(vance_fraud, vance_poss) is False
+
+
+def test_compare_matches_a_short_form_of_the_accused():
+    ct = _compare_module()
+    assert ct._same_question(
+        "Dana Marlowe — Fraud over $5,000 (s.380(1)(a))",
+        "Marlowe — Fraud over $5,000 (s.380(1)(a))",
+    ) is True
+
+
+def test_compare_split_question_uses_the_first_separator_only():
+    ct = _compare_module()
+    who, what = ct._split_question(
+        "Kit Rowan — Fraud over $5,000 (s.380(1)(a)) — party-liability basis (s.21)"
+    )
+    assert who == "Kit Rowan"
+    assert what.startswith("Fraud over $5,000") and "party-liability" in what
+
+
+def test_compare_falls_back_to_wording_when_no_statute_is_cited():
+    ct = _compare_module()
+    assert ct._same_question("X — Theft of a bicycle", "X — Theft of a bicycle") is True
+    assert ct._same_question("X — Theft of a bicycle", "X — Arson of a warehouse") is False
+
+
+def test_compare_trials_reads_a_single_accused_verdict(tmp_path):
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("ct2", root / "scripts" / "compare_trials.py")
+    ct = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ct)
+
+    t = tmp_path / "trial_y.md"
+    t.write_text(
+        "## The Verdict\n\n**Jury Foreperson:** Verdict: Not Guilty\n\n- Tally: Guilty: 0, Not Guilty: 3\n",
+        encoding="utf-8",
+    )
+    assert ct._parse(t)["verdicts"] == {"verdict": "Not Guilty"}
+
+
+def test_pinned_charges_hold_the_elements_fixed():
+    # The elements of an offence are settled law. Pinning them is what stops the
+    # intake clerk re-deriving a different list — and a different verdict — per run.
+    c = CaseInput(
+        title="t", charge_or_claim="fraud", your_side="s",
+        charges=[Charge(label="Fraud over $5,000 (s.380(1)(a))", elements=["a", "b"])],
+    )
+    assert c.charges[0].label.startswith("Fraud over")
+    assert c.charges[0].elements == ["a", "b"]
+    assert CaseInput(title="t", charge_or_claim="c", your_side="s").charges == []
+
+
+def test_reliability_defaults():
+    c = CaseInput(title="t", charge_or_claim="c", your_side="s")
+    assert c.verdict_passes == 1          # opt in to the extra cost
+    assert c.strict_elements is True
+    assert c.calibrated_proof is True
+    assert c.evidence_digest is True
+    assert c.deadlock_exhortation is True
+    assert c.proof_threshold is None
+
+
+def test_verdict_passes_is_bounded():
+    import pytest
+    with pytest.raises(Exception):
+        CaseInput(title="t", charge_or_claim="c", your_side="s", verdict_passes=9)
+
+
+def test_element_finding_probability_is_optional():
+    assert ElementFinding(element="e").probability is None
+    assert ElementFinding(element="e", probability=0).probability == 0
+
+
+def test_probability_accepts_the_shapes_models_actually_emit():
+    # A rejected value would fail the whole ballot and cost that juror their vote,
+    # so every plausible spelling has to land somewhere sane.
+    def p(v):
+        return ElementFinding.model_validate({"element": "e", "probability": v}).probability
+
+    assert p(85) == 85
+    assert p("85") == 85
+    assert p("85%") == 85
+    assert p(" 90 % ") == 90
+    assert p(0.85) == 85        # a 0-1 fraction where a percentage was asked for
+    assert p(1) == 100          # ambiguous, but "certain" either way
+    assert p(140) == 100        # clamped, not rejected
+    assert p(-5) == 0
+    assert p("high") is None    # unreadable -> fall back to the boolean finding
+    assert p("") is None
+    assert p(None) is None
+    assert p(True) is None      # a stray boolean is not a probability
+
+
+def test_unreadable_probability_leaves_the_finding_usable():
+    f = ElementFinding.model_validate({"element": "e", "proven": True, "probability": "very high"})
+    assert f.probability is None and _element_proven(f, 90) is True

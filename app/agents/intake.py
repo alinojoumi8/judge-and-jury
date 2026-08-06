@@ -56,4 +56,8 @@ input cites none, return an empty list — never invent case law.
 
 
 def build_intake_agent(model) -> Agent:
-    return Agent(model, system_prompt=INTAKE_SYSTEM_PROMPT, model_settings={"temperature": 0.3})
+    # Near-deterministic. Intake fixes the elements, the Agreed Record, and the
+    # framing every later role argues from — drift here reshapes the whole trial, so
+    # two runs of one case file should start from as near the same footing as
+    # possible. (Pin `charges` on the case to fix the elements outright.)
+    return Agent(model, system_prompt=INTAKE_SYSTEM_PROMPT, model_settings={"temperature": 0.15})

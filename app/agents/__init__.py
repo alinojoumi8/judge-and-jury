@@ -3,6 +3,7 @@
 from .casting import build_caster_agent
 from .crown import build_crown_agent
 from .defense import build_defense_agent
+from .digest import build_digest_agent
 from .intake import build_intake_agent
 from .judge import build_judge_agent, build_ruling_agent
 from .juror import (
@@ -17,6 +18,7 @@ from .witness import build_witness_agent
 
 __all__ = [
     "build_intake_agent",
+    "build_digest_agent",
     "build_crown_agent",
     "build_defense_agent",
     "build_judge_agent",

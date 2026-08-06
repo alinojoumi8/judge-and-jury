@@ -255,6 +255,9 @@ function renderError(msg) {
 
 function renderStructured(ev) {
   const d = ev.data || {};
+  if (d._manifest) return renderManifest(d);
+  if (d._digest) return renderDigest(d);
+  if (d._diagnostics) return renderDiagnostics(d);
   if (d._grounding) return renderGrounding(d);
   if (d._cast) return renderCast(d);
   if (d._directed_verdict) return renderDirectedVerdict(d);
@@ -269,6 +272,84 @@ function renderStructured(ev) {
   if (d.sentence_or_remedy !== undefined && d.verdict_acknowledgement !== undefined) return renderRuling(ev.speaker, d);
   if (d.verdict && d.juror_name) return renderVote(ev.speaker, d);
   addStatement(ev.speaker, ev.content || JSON.stringify(d));
+}
+
+// The settings this run was produced under — so a transcript can be traced back.
+function renderManifest(d) {
+  const chip = (label, value) =>
+    `<span class="tag">${escapeHtml(label)}: ${escapeHtml(String(value))}</span>`;
+  const row = el("div", "card-row r-clerk");
+  row.innerHTML =
+    `<span class="avatar r-clerk">${svg("file")}</span>` +
+    `<div class="bubble case-panel">` +
+      `<div class="who"><span class="name">Trial configuration</span>` +
+        `<span class="role-tag">${escapeHtml(d.model || "")}</span></div>` +
+      `<div class="tags">` +
+        chip("jury", d.jury_size) +
+        chip("argument rounds", d.argument_rounds) +
+        chip("deliberation", `${d.deliberation_rounds} × ${d.deliberation_style}`) +
+        chip("verdict passes", d.verdict_passes) +
+        chip("proof threshold", `${d.proof_threshold}%`) +
+        (d.strict_elements ? chip("strict elements", "on") : "") +
+        (d.calibrated_proof ? chip("calibrated proof", "on") : "") +
+        (d.evidence_digest ? chip("evidence digest", "on") : "") +
+        (d.straw_poll ? chip("straw poll", "on") : "") +
+        (d.grounding_check ? chip("fact-check", "on") : "") +
+      `</div>` +
+    `</div>`;
+  append(row);
+}
+
+// The neutral, element-by-element map of the evidence the jury reasons from.
+function renderDigest(d) {
+  const bullets = (arr, mark) => (arr || [])
+    .map((x) => `<li><b>${mark}</b> ${escapeHtml(x)}</li>`).join("");
+  const charges = (d.charges || []).map((c) =>
+    `<div class="kv" style="margin-top:8px"><b>${escapeHtml(c.charge_label || "")}</b></div>` +
+    (c.elements || []).map((e) =>
+      `<div class="kv" style="margin-top:4px"><i>${escapeHtml(e.element || "")}</i></div>` +
+      `<ul class="facts">${bullets(e.supporting, "✔")}${bullets(e.undermining, "✘")}` +
+      `${bullets(e.gaps, "○")}</ul>`
+    ).join("")
+  ).join("");
+  const row = el("div", "card-row r-clerk");
+  row.innerHTML =
+    `<span class="avatar r-clerk">${svg("scales")}</span>` +
+    `<div class="bubble case-panel">` +
+      `<div class="who"><span class="name">Evidence Digest</span>` +
+        `<span class="role-tag">neutral · element by element</span></div>` +
+      charges +
+      ((d.undisputed || []).length
+        ? `<div class="kv" style="margin-top:8px"><b>Undisputed</b></div>` +
+          `<ul class="facts">${(d.undisputed).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`
+        : "") +
+      ((d.disputed || []).length
+        ? `<div class="kv" style="margin-top:6px"><b>In dispute</b></div>` +
+          `<ul class="facts">${(d.disputed).map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`
+        : "") +
+    `</div>`;
+  append(row);
+}
+
+// How trustworthy the ballots behind this verdict actually are.
+function renderDiagnostics(d) {
+  const gaps = (d.unmatched_entries || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+  const abst = (d.abstentions || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+  const row = el("div", "card-row r-juror");
+  row.innerHTML =
+    `<span class="avatar r-juror">${svg("scales")}</span>` +
+    `<div class="bubble">` +
+      `<div class="who"><span class="name">Ballot integrity</span></div>` +
+      `<div class="kv"><b>Counted:</b> ${d.ballots_counted}/${d.ballots_expected}` +
+        (d.mean_sample_agreement == null
+          ? ` · single-sample ballots (not resampled)`
+          : ` · <b>mean self-agreement:</b> ${Math.round(d.mean_sample_agreement * 100)}%` +
+            ` over ${d.verdict_passes} samples`) +
+        `</div>` +
+      (abst ? `<div class="kv" style="margin-top:6px"><b>Abstained — excluded from the count</b></div><ul class="facts">${abst}</ul>` : "") +
+      (gaps ? `<div class="kv" style="margin-top:6px"><b>Entries that fell back to a top-level vote</b></div><ul class="facts">${gaps}</ul>` : "") +
+    `</div>`;
+  append(row);
 }
 
 // The immutable Agreed Record — the trial's source of truth, shown after intake.
@@ -375,11 +456,14 @@ function voteIsClear(vote, verdict) {
 // A juror's per-element findings, shown as a ✓/✗ checklist under their reasoning.
 function elementList(findings) {
   if (!Array.isArray(findings) || !findings.length) return "";
-  const items = findings.map((ef) =>
-    `<li class="el ${ef.proven ? "el-ok" : "el-no"}">` +
-    `<span class="el-mark">${ef.proven ? "✓" : "✗"}</span>` +
-    `<span>${escapeHtml(ef.element || "")}</span></li>`
-  ).join("");
+  const items = findings.map((ef) => {
+    // The juror's own percentage, when they gave one — it is what the standard of
+    // proof is enforced against, so it belongs next to the finding.
+    const pct = Number.isInteger(ef.probability) ? ` <span class="conf">${ef.probability}%</span>` : "";
+    return `<li class="el ${ef.proven ? "el-ok" : "el-no"}">` +
+      `<span class="el-mark">${ef.proven ? "✓" : "✗"}</span>` +
+      `<span>${escapeHtml(ef.element || "")}${pct}</span></li>`;
+  }).join("");
   return `<ul class="elements">${items}</ul>`;
 }
 

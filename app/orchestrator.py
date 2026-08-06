@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from collections import Counter
 from typing import AsyncIterator
 
 from .agents import (
@@ -10,6 +12,7 @@ from .agents import (
     build_crown_agent,
     build_defense_agent,
     build_deliberation_agent,
+    build_digest_agent,
     build_foreperson_agent,
     build_intake_agent,
     build_judge_agent,
@@ -20,6 +23,7 @@ from .agents import (
     build_verifier_agent,
     build_witness_agent,
 )
+from .config import get_settings
 from .llm_utils import run_structured
 from .model_factory import build_model
 from .schemas import (
@@ -33,6 +37,7 @@ from .schemas import (
     DeliberationRemark,
     DirectedVerdictMotion,
     DirectedVerdictRuling,
+    EvidenceDigest,
     ExaminationQuestion,
     GroundingFlag,
     GroundingReport,
@@ -43,6 +48,7 @@ from .schemas import (
     Objection,
     ObjectionRuling,
     RolePersona,
+    RunManifest,
     Speech,
     StrawMovement,
     StructuredCase,
@@ -202,6 +208,120 @@ def _charge_directives(case: CaseInput, defendants: list) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Label / element matching
+#
+# A juror's ballot is free text produced by a model: it paraphrases charge labels
+# ("Fraud over $5,000" for "Fraud over $5,000 (s.380(1)(a))"), shortens names
+# ("Marlowe" for "Dana Marlowe"), and rewords elements. Matching those
+# by exact string silently drops the entry and falls back to a different vote — a
+# wrong verdict that looks perfectly well-formed. So we match on meaning instead.
+# ---------------------------------------------------------------------------
+_WORD = re.compile(r"[a-z0-9]+")
+# Words too common to carry any signal when comparing two legal phrasings.
+_STOP = frozenset(
+    "the a an of to that this and or in on at by for with as is was be been are it "
+    "its their his her from any all not no s".split()
+)
+# Similarity above which two labels/elements are treated as the same thing. Set by
+# hand against real ballots: comfortably above unrelated elements (~0.0-0.2) and
+# below genuine rewordings of the same element (~0.5-0.9).
+_MATCH_FLOOR = 0.45
+
+
+def _tokens(text: str) -> set[str]:
+    return {w for w in _WORD.findall((text or "").lower()) if w not in _STOP}
+
+
+def _similarity(a: str, b: str) -> float:
+    """0.0-1.0 similarity between two labels, tolerant of paraphrase and detail.
+
+    Uses the overlap coefficient as well as Jaccard so that a short form fully
+    contained in a longer one ("Marlowe" in "Dana Marlowe", "Fraud
+    over $5,000" in "Fraud over $5,000 (s.380(1)(a))") scores as a match, while
+    two genuinely different elements still score near zero.
+    """
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return 1.0 if (a or "").strip().lower() == (b or "").strip().lower() else 0.0
+    inter = len(ta & tb)
+    if not inter:
+        return 0.0
+    jaccard = inter / len(ta | tb)
+    overlap = inter / min(len(ta), len(tb))
+    return max(jaccard, 0.9 * overlap)
+
+
+def _pick_by_label(entries: list, attr: str, target: str):
+    """The entry whose `attr` best names `target`, or None if nothing is close.
+
+    Returning None (rather than a bad guess) is what lets the caller record an
+    honest fallback instead of quietly tallying the wrong vote.
+    """
+    best, best_score = None, 0.0
+    for e in entries:
+        score = _similarity(target, getattr(e, attr, "") or "")
+        if score > best_score:
+            best, best_score = e, score
+    return best if best_score >= _MATCH_FLOOR else None
+
+
+def _element_proven(finding, threshold: int | None = None) -> bool:
+    """Is this element established to the standard of proof?
+
+    The juror's boolean is necessary but not sufficient: when they also gave a
+    probability, it has to actually meet the standard they were charged with. This
+    only ever DOWNGRADES an over-confident "proven" — it never turns a "not proven"
+    into a finding against the accused.
+    """
+    if not getattr(finding, "proven", False):
+        return False
+    p = getattr(finding, "probability", None)
+    if threshold is not None and p is not None and p < threshold:
+        return False
+    return True
+
+
+def _align_findings(required: list[str], findings: list) -> list:
+    """Line each required element up with the juror's finding on it (None if absent).
+
+    Greedy best-match, each finding used once. If nothing matches by wording but the
+    juror returned exactly as many findings as there are elements, they almost
+    certainly answered in order — so fall back to position rather than to nothing.
+    """
+    remaining = list(findings)
+    out: list = []
+    for req in required:
+        best, best_score = None, 0.0
+        for f in remaining:
+            score = _similarity(req, getattr(f, "element", "") or "")
+            if score > best_score:
+                best, best_score = f, score
+        if best is not None and best_score >= _MATCH_FLOOR:
+            remaining.remove(best)
+            out.append(best)
+        else:
+            out.append(None)
+    # A juror who covered every element but reworded some of them beyond recognition
+    # would otherwise be read as having left those elements unaddressed — an
+    # acquittal on a wording quirk. When the leftovers exactly fill the holes, the
+    # juror answered in order, so use position.
+    holes = [i for i, x in enumerate(out) if x is None]
+    if holes and len(remaining) == len(holes):
+        for i, f in zip(holes, remaining):
+            out[i] = f
+    return out
+
+
+def _proof_threshold(case: CaseInput) -> int:
+    """The percentage at which an element counts as proven for this case type."""
+    if case.proof_threshold is not None:
+        return case.proof_threshold
+    # ~90% for "beyond a reasonable doubt"; a bare majority for "balance of
+    # probabilities". Both are conventions — override with `proof_threshold`.
+    return 51 if case.case_type == "civil" else 90
+
+
+# ---------------------------------------------------------------------------
 # Verdict helpers
 # ---------------------------------------------------------------------------
 def _normalize_vote(verdict_text: str, model_vote: str) -> str:
@@ -225,16 +345,40 @@ def _normalize_vote(verdict_text: str, model_vote: str) -> str:
     return "convict" if model_vote == "convict" else "acquit"
 
 
-def _derive_vote(findings: list, model_vote: str, verdict_text: str) -> str:
+def _derive_vote(
+    findings: list,
+    model_vote: str,
+    verdict_text: str,
+    *,
+    required: list[str] | None = None,
+    strict: bool = True,
+    threshold: int | None = None,
+) -> str:
     """Turn per-element findings into a 'convict'/'acquit' signal for tallying.
 
     When the juror worked through the legal elements, those are authoritative: the
     accused is convicted ONLY if every element is proven — a single unproven element
     means acquit. With no element findings, fall back to the free-text/enum reading.
+
+    `required` is the authoritative element list from the charge. Supplying it fixes
+    two ways a raw `all(proven)` gets the verdict wrong: a juror who addresses only
+    some elements would otherwise convict on partial findings, and a juror who
+    invents an extra element would otherwise acquit on it. With `strict`, an element
+    the juror never addressed counts as NOT proven — the burden sits with the
+    prosecution, so silence can never be a finding in its favour.
     """
-    if findings:
-        return "convict" if all(getattr(f, "proven", False) for f in findings) else "acquit"
-    return _normalize_vote(verdict_text, model_vote)
+    if not findings:
+        return _normalize_vote(verdict_text, model_vote)
+    if required:
+        for f in _align_findings(required, findings):
+            if f is None:
+                if strict:
+                    return "acquit"
+                continue
+            if not _element_proven(f, threshold):
+                return "acquit"
+        return "convict"
+    return "convict" if all(_element_proven(f, threshold) for f in findings) else "acquit"
 
 
 def _settled_with_conviction(votes: list[JurorVote], verdict, min_conf: int = 6) -> bool:
@@ -245,11 +389,12 @@ def _settled_with_conviction(votes: list[JurorVote], verdict, min_conf: int = 6)
     immediately. A genuinely confident room exits. `verdict` is accepted for API
     symmetry; the carrying side is read from the ballots so it works pre-tally too.
     """
-    if not votes:
+    cast = [v for v in votes if not getattr(v, "abstained", False)]
+    if not cast:
         return True
-    convict_n = sum(1 for v in votes if v.vote == "convict")
-    carrying = "convict" if convict_n * 2 > len(votes) else "acquit"
-    side = [v for v in votes if v.vote == carrying]
+    convict_n = sum(1 for v in cast if v.vote == "convict")
+    carrying = "convict" if convict_n * 2 > len(cast) else "acquit"
+    side = [v for v in cast if v.vote == carrying]
     if not side:
         return True
     mean_conf = sum(v.confidence for v in side) / len(side)
@@ -298,8 +443,24 @@ def _tally_votes(votes: list[JurorVote], case_type: str) -> Verdict:
     convict_word = "Liable" if case_type == "civil" else "Guilty"
     acquit_word = "Not Liable" if case_type == "civil" else "Not Guilty"
 
-    convict = sum(1 for v in votes if v.vote == "convict")
-    acquit = len(votes) - convict
+    # A juror whose ballot could not be obtained ABSTAINS — they are not counted as
+    # voting either way. Counting a failed model call as an acquittal (the old
+    # behaviour) let one parse error force a hung jury in a criminal trial.
+    cast = [v for v in votes if not getattr(v, "abstained", False)]
+    abstentions = len(votes) - len(cast)
+
+    if not cast:
+        return Verdict(
+            tally={convict_word: 0, acquit_word: 0},
+            outcome="No verdict (the jury returned no ballots)",
+            unanimous=False,
+            hung=True,
+            dissent_summary="No juror was able to return a ballot.",
+            abstentions=abstentions,
+        )
+
+    convict = sum(1 for v in cast if v.vote == "convict")
+    acquit = len(cast) - convict
     tally = {convict_word: convict, acquit_word: acquit}
 
     unanimous = convict == 0 or acquit == 0
@@ -339,12 +500,18 @@ def _tally_votes(votes: list[JurorVote], case_type: str) -> Verdict:
         # Civil majority verdict — name the dissenting minority.
         losing = acquit_word if outcome == convict_word else convict_word
         dissenters = [
-            v for v in votes
+            v for v in cast
             if (v.vote == "acquit" and outcome == convict_word)
             or (v.vote == "convict" and outcome == acquit_word)
         ]
         names = ", ".join(v.juror_name for v in dissenters)
         dissent_summary = f"Majority verdict. Dissenting ({losing}): {names}."
+
+    if abstentions:
+        dissent_summary += (
+            f" ({abstentions} juror(s) returned no ballot and were excluded from "
+            "the count.)"
+        )
 
     return Verdict(
         tally=tally,
@@ -352,6 +519,7 @@ def _tally_votes(votes: list[JurorVote], case_type: str) -> Verdict:
         unanimous=unanimous,
         hung=hung,
         dissent_summary=dissent_summary,
+        abstentions=abstentions,
     )
 
 
@@ -359,16 +527,13 @@ def _project_defendant_ballots(votes: list[JurorVote], d: Defendant) -> list[Jur
     """Each juror's ballot FOR ONE accused — their DefendantVote, or the top-level.
 
     Carries element_findings and per-charge votes through so a downstream per-charge
-    tally still works. Missing/misspelled entries fall back to the top-level vote.
+    tally still works. Names are matched on meaning (`_pick_by_label`), so a juror
+    who writes "Marlowe" for "Dana Marlowe" is still counted on that
+    accused; only a genuinely absent entry falls back to the top-level vote.
     """
     out: list[JurorVote] = []
     for v in votes:
-        m = next(
-            (x for x in v.defendant_votes
-             if x.defendant_name.strip().lower() == d.name.strip().lower()),
-            None,
-        )
-        src = m if m is not None else v
+        src = _pick_by_label(v.defendant_votes, "defendant_name", d.name) or v
         out.append(
             JurorVote(
                 juror_name=v.juror_name,
@@ -376,11 +541,41 @@ def _project_defendant_ballots(votes: list[JurorVote], d: Defendant) -> list[Jur
                 vote=src.vote,
                 confidence=src.confidence,
                 reasoning=src.reasoning,
+                abstained=v.abstained,
+                sample_agreement=v.sample_agreement,
                 element_findings=list(getattr(src, "element_findings", [])),
                 charge_votes=list(getattr(src, "charge_votes", [])),
             )
         )
     return out
+
+
+def _projection_gaps(votes: list[JurorVote], defendants: list, charges: list) -> list[str]:
+    """Ballots where a named accused or charge had no matching entry.
+
+    These are the cases where the tally silently falls back to a juror's top-level
+    vote, so they are worth surfacing rather than hiding: a run with many gaps has a
+    less trustworthy per-charge breakdown than one with none.
+    """
+    gaps: list[str] = []
+    multi_d, multi_c = len(defendants) > 1, len(charges) > 1
+    for v in votes:
+        if v.abstained:
+            continue
+        if multi_d:
+            for d in defendants:
+                dv = _pick_by_label(v.defendant_votes, "defendant_name", d.name)
+                if dv is None:
+                    gaps.append(f"{v.juror_name}: no ballot entry for {d.name}")
+                elif multi_c:
+                    for c in charges:
+                        if _pick_by_label(dv.charge_votes, "charge_label", c.label) is None:
+                            gaps.append(f"{v.juror_name}/{d.name}: no entry for {c.label}")
+        elif multi_c:
+            for c in charges:
+                if _pick_by_label(v.charge_votes, "charge_label", c.label) is None:
+                    gaps.append(f"{v.juror_name}: no entry for {c.label}")
+    return gaps
 
 
 def _tally_votes_multi(
@@ -420,16 +615,12 @@ def _tally_votes_by_charge(
     for c in charges:
         projected: list[JurorVote] = []
         for v in votes:
-            m = next(
-                (x for x in v.charge_votes
-                 if x.charge_label.strip().lower() == c.label.strip().lower()),
-                None,
-            )
-            src = m if m is not None else v
+            src = _pick_by_label(v.charge_votes, "charge_label", c.label) or v
             projected.append(
                 JurorVote(
                     juror_name=v.juror_name, verdict=src.verdict, vote=src.vote,
                     confidence=src.confidence, reasoning=src.reasoning,
+                    abstained=v.abstained,
                 )
             )
         base = _tally_votes(projected, case_type)
@@ -437,6 +628,7 @@ def _tally_votes_by_charge(
             ChargeVerdict(
                 charge_label=c.label, tally=base.tally, outcome=base.outcome,
                 unanimous=base.unanimous, hung=base.hung, dissent_summary=base.dissent_summary,
+                abstentions=base.abstentions,
             )
         )
     return out
@@ -475,7 +667,9 @@ def _tally_signature(votes: list[JurorVote]) -> tuple:
 
     sig = []
     for v in votes:
-        if v.defendant_votes:
+        if getattr(v, "abstained", False):
+            sig.append((v.juror_name, "abstain"))
+        elif v.defendant_votes:
             inner = tuple(
                 sorted((dv.defendant_name.strip().lower(), charge_sig(dv)) for dv in v.defendant_votes)
             )
@@ -483,6 +677,46 @@ def _tally_signature(votes: list[JurorVote]) -> tuple:
         else:
             sig.append((v.juror_name, charge_sig(v)))
     return tuple(sorted(sig, key=lambda x: x[0]))
+
+
+def _ballot_signature(v: JurorVote) -> tuple:
+    """One juror's full position (every accused, every charge) as a hashable key."""
+    return _tally_signature([v])[0][1:]
+
+
+def _modal_ballot(ballots: list[JurorVote]) -> JurorVote:
+    """The ballot a juror gave most often across independent samples.
+
+    Self-consistency: sampling one ballot per juror makes the verdict a draw from the
+    model's distribution rather than a reading of the evidence, and on a close case
+    that draw decides the trial. Taking each juror's MODAL position across K samples
+    keeps a whole coherent ballot (rather than stitching a Frankenstein one out of
+    per-element majorities) and records how stable that juror actually was. Ties go
+    to the most confident of the tied ballots.
+    """
+    if len(ballots) == 1:
+        return ballots[0]
+    counts = Counter(_ballot_signature(b) for b in ballots)
+    top = max(counts.values())
+    winners = [sig for sig, n in counts.items() if n == top]
+    pool = [b for b in ballots if _ballot_signature(b) in winners]
+    chosen = max(pool, key=lambda b: b.confidence)
+    chosen.sample_agreement = round(top / len(ballots), 3)
+    return chosen
+
+
+def _has_conviction(verdict: Verdict, convict_word: str) -> bool:
+    """Did anything at all result in a conviction / finding of liability?
+
+    Checked across every axis, because a multi-charge multi-accused verdict can
+    convict on one count while the headline outcome reads as an acquittal.
+    """
+    if verdict.outcome == convict_word:
+        return True
+    for dv in verdict.per_defendant:
+        if dv.outcome == convict_word or any(c.outcome == convict_word for c in dv.per_charge):
+            return True
+    return any(c.outcome == convict_word for c in verdict.per_charge)
 
 
 def _all_settled(verdict: Verdict) -> bool:
@@ -606,6 +840,32 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         log(speaker, text)
         return TrialEvent(phase=phase, speaker=speaker, kind="message", content=text)
 
+    # --- 0. Run manifest -------------------------------------------------
+    # Emitted first so any transcript can be traced back to the exact settings that
+    # produced it — otherwise two runs that disagree are impossible to compare.
+    yield TrialEvent(
+        phase="Intake", speaker="System", kind="structured",
+        content="Trial configuration.",
+        data={
+            "_manifest": True,
+            **RunManifest(
+                model=case.model or get_settings().model,
+                case_type=case.case_type,
+                jury_size=case.jury_size,
+                argument_rounds=case.argument_rounds,
+                deliberation_rounds=case.deliberation_rounds,
+                deliberation_style=case.deliberation_style,
+                verdict_passes=case.verdict_passes,
+                proof_threshold=_proof_threshold(case),
+                strict_elements=case.strict_elements,
+                calibrated_proof=case.calibrated_proof,
+                evidence_digest=case.evidence_digest,
+                grounding_check=case.grounding_check,
+                straw_poll=case.straw_poll,
+            ).model_dump(),
+        },
+    )
+
     # --- 1. Intake ------------------------------------------------------
     yield TrialEvent(phase="Intake", speaker="System", kind="phase", content="Case Intake")
     intake_prompt = (
@@ -619,6 +879,17 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             f"- {d.name} ({d.role or 'role unstated'}): {d.account}" for d in case.defendants
         )
         intake_prompt += f"\n\nCo-accused (each judged separately):\n{roster}"
+    if case.charges:
+        pinned = "\n".join(
+            f"- {c.label}\n" + "\n".join(f"    * {e}" for e in c.elements)
+            for c in case.charges
+        )
+        intake_prompt += (
+            "\n\nThe charges and their essential legal elements are SETTLED and given "
+            "to you below. Echo them back in 'charges' EXACTLY as written — do not "
+            "reword, add, drop, or reorder any element — and mirror the first charge's "
+            f"elements in 'elements':\n{pinned}"
+        )
     sc: StructuredCase = await run_structured(
         intake, intake_prompt, StructuredCase, require_english=True
     )
@@ -680,7 +951,10 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
 
     # Charges with per-charge elements. A single charge (or none) collapses to one
     # Charge carrying the flat `elements`, so single-charge cases behave as before.
-    charges = list(sc.charges)
+    # Charges pinned on the case file WIN: the elements of an offence are settled
+    # law, and letting the intake clerk re-derive them each run quietly moves the
+    # verdict, because conviction is an AND across whatever list it produced.
+    charges = list(case.charges) if case.charges else list(sc.charges)
     if len(charges) <= 1:
         label = (
             charges[0].label if (charges and charges[0].label)
@@ -1188,13 +1462,118 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
     if fc:
         yield fc
 
+    # --- 6b. Neutral evidence digest, element by element -----------------
+    # Before the jury retires, a neutral clerk maps the record onto the elements:
+    # what supports each one, what undercuts it, what the record simply does not
+    # contain. Jurors otherwise have to hold ~150KB of advocacy in their heads and
+    # end up weighing whichever closing was more stirring; the digest anchors
+    # deliberation to the evidence and is a large part of why two runs of the same
+    # case stop disagreeing.
+    digest_block = ""
+    if case.evidence_digest:
+        yield TrialEvent(
+            phase="Digest", speaker="System", kind="phase",
+            content="The Evidence, Element by Element",
+        )
+        digest_agent = build_digest_agent(model)
+        charge_spec = "\n".join(
+            f"  Charge: {c.label}\n"
+            + "\n".join(f"    - {e}" for e in c.elements)
+            for c in charges
+        )
+        accused_note = (
+            "\n\nThere are MULTIPLE co-accused: "
+            + ", ".join(d.name for d in defendants)
+            + ". Cover each element for EACH accused, keeping their positions distinct."
+            if multi else ""
+        )
+        try:
+            digest = await run_structured(
+                digest_agent,
+                f"{case_brief}\n\nCHARGES AND ELEMENTS TO MAP:\n{charge_spec}{accused_note}\n\n"
+                f"FULL TRIAL RECORD:\n{transcript_text()}\n\n"
+                "Compile the evidence digest. Return ONLY an EvidenceDigest JSON.",
+                EvidenceDigest, require_english=True,
+            )
+        except Exception:
+            digest = None
+        if digest and digest.charges:
+            lines = ["=== EVIDENCE DIGEST (neutral; compiled by the court clerk) ==="]
+            for ce in digest.charges:
+                lines.append(f"Charge — {ce.charge_label}:")
+                for ee in ce.elements:
+                    lines.append(f"  Element: {ee.element}")
+                    for s in ee.supporting:
+                        lines.append(f"    [supports] {s}")
+                    for u in ee.undermining:
+                        lines.append(f"    [undercuts] {u}")
+                    for g in ee.gaps:
+                        lines.append(f"    [not in the record] {g}")
+            if digest.undisputed:
+                lines.append("Undisputed: " + "; ".join(digest.undisputed))
+            if digest.disputed:
+                lines.append("In dispute: " + "; ".join(digest.disputed))
+            lines.append(
+                "This digest is a neutral aid, not evidence and not a conclusion. Where "
+                "it and the transcript differ, the transcript governs."
+            )
+            digest_block = "\n".join(lines)
+            yield TrialEvent(
+                phase="Digest", speaker="Court Clerk", kind="structured",
+                content="The evidence has been summarised, element by element.",
+                data={"_digest": True, **digest.model_dump()},
+            )
+        else:
+            yield TrialEvent(
+                phase="Digest", speaker="Court Clerk", kind="message",
+                content=(
+                    "No digest could be compiled; the jury will work from the "
+                    "transcript alone."
+                ),
+            )
+
     # --- 7. Jury deliberation -------------------------------------------
     yield TrialEvent(
         phase="Deliberation", speaker="System", kind="phase", content="The Jury Deliberates"
     )
     full_transcript = transcript_text()
+    # Everything a juror reasons from: the neutral digest first, then the raw record.
+    jury_record = (f"{digest_block}\n\n" if digest_block else "") + (
+        f"Full trial transcript:\n{full_transcript}"
+    )
+    threshold = _proof_threshold(case) if case.calibrated_proof else None
+    # The authoritative element list per charge — what a juror's findings are checked
+    # against, so partial or invented findings can't decide the verdict.
+    elements_by_charge = {c.label: list(c.elements) for c in charges}
+    primary_elements = list(charges[0].elements) if charges else []
 
-    async def get_vote(persona: JurorPersona, extra: str = "") -> JurorVote:
+    def _elements_for(label: str) -> list[str]:
+        match = _pick_by_label(charges, "label", label)
+        return list(match.elements) if match is not None else primary_elements
+
+    def _apply_element_logic(vote: JurorVote) -> None:
+        """Re-derive every convict/acquit signal on a ballot from its element findings.
+
+        Applied at all four levels (top, per-charge, per-defendant, per-defendant
+        per-charge), each checked against that charge's real element list.
+        """
+        strict = case.strict_elements
+
+        def derive(obj, required):
+            return _derive_vote(
+                obj.element_findings, obj.vote, obj.verdict,
+                required=required, strict=strict, threshold=threshold,
+            )
+
+        vote.vote = derive(vote, primary_elements if not multi_c else None)
+        for cv in vote.charge_votes:
+            cv.vote = derive(cv, _elements_for(cv.charge_label))
+        for dv in vote.defendant_votes:
+            dv.vote = derive(dv, primary_elements if not multi_c else None)
+            for cv in dv.charge_votes:
+                cv.vote = derive(cv, _elements_for(cv.charge_label))
+
+    async def get_vote(persona: JurorPersona, extra: str = "", passes: int = 1) -> JurorVote:
         per_def = ""
         if multi:
             names = ", ".join(d.name for d in defendants)
@@ -1218,34 +1597,45 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                          "per-element findings)."
                 )
             )
+        standard_note = (
+            "\n\nFor EVERY element finding also give \"probability\": your honest "
+            f"percentage (0-100) that the element is proven. \"{standard}\" means you "
+            f"must be at least {threshold}% sure before you may mark an element proven; "
+            "below that, the element is NOT proven."
+            if threshold is not None else ""
+        )
         prompt = (
             f"Your persona — name: {persona.name}; background: {persona.background}; "
             f"disposition: {persona.disposition}.\n\n{case_brief}\n\n"
-            f"Full trial transcript:\n{full_transcript}{per_def}{charge_note}{extra}"
+            f"{jury_record}{per_def}{charge_note}{standard_note}{extra}"
         )
-        try:
-            vote = await run_structured(juror_agent, prompt, JurorVote, require_english=True)
+
+        async def one_ballot() -> JurorVote | None:
+            try:
+                vote = await run_structured(juror_agent, prompt, JurorVote, require_english=True)
+            except Exception:
+                return None
             vote.juror_name = persona.name  # keep the persona name even if the model drifts
             # The verdict is driven by the per-element findings: convict only if every
-            # essential element is proven. Falls back to the text/enum reading if the
-            # juror gave no element findings. Applied at every level (top, per-charge,
-            # per-defendant, per-defendant-per-charge).
-            vote.vote = _derive_vote(vote.element_findings, vote.vote, vote.verdict)
-            for cv in vote.charge_votes:
-                cv.vote = _derive_vote(cv.element_findings, cv.vote, cv.verdict)
-            for dv in vote.defendant_votes:
-                dv.vote = _derive_vote(dv.element_findings, dv.vote, dv.verdict)
-                for cv in dv.charge_votes:
-                    cv.vote = _derive_vote(cv.element_findings, cv.vote, cv.verdict)
+            # essential element of that charge is proven to the standard.
+            _apply_element_logic(vote)
             return vote
-        except Exception as exc:
+
+        ballots = [b for b in await asyncio.gather(
+            *[one_ballot() for _ in range(max(1, passes))]
+        ) if b is not None]
+        if not ballots:
+            # No ballot could be obtained. ABSTAIN — never invent a vote. A fabricated
+            # acquittal here used to be enough, on its own, to hang a criminal jury.
             return JurorVote(
                 juror_name=persona.name,
-                verdict=acquit_word,
+                verdict="(no ballot)",
                 vote="acquit",
                 confidence=1,
-                reasoning=f"(Could not deliberate: {exc})",
+                reasoning="(This juror was unable to return a ballot; excluded from the count.)",
+                abstained=True,
             )
+        return _modal_ballot(ballots)
 
     def tally(vs: list[JurorVote]) -> Verdict:
         return _tally(vs, defendants, charges, case.case_type)
@@ -1294,7 +1684,7 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         prompt = (
             f"You are the JURY FOREPERSON. Your persona — name: {foreperson.name}; "
             f"background: {foreperson.background}; disposition: {foreperson.disposition}.\n\n"
-            f"{case_brief}\n\nFull trial transcript:\n{full_transcript}\n\n"
+            f"{case_brief}\n\n{jury_record}\n\n"
             f"Jury-room discussion so far:\n{room_text}{status}\n\n{ask}"
         )
         try:
@@ -1313,7 +1703,7 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         prompt = (
             f"Your persona — name: {persona.name}; background: {persona.background}; "
             f"disposition: {persona.disposition}.\n\n{case_brief}\n\n"
-            f"Full trial transcript:\n{full_transcript}\n\n"
+            f"{jury_record}\n\n"
             f"Jury-room discussion so far — respond to it:\n{room_text}{per_def_note}"
         )
         try:
@@ -1343,10 +1733,32 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             data={"_straw": True, **tally(straw_votes).model_dump()},
         )
 
+    def _rotate(seq: list, n: int) -> list:
+        """Rotate the speaking/reporting order so the same juror never anchors twice.
+
+        Whoever speaks first sets the frame the rest respond to. Fixing that order
+        across rounds bakes one juror's reading into every round of the discussion.
+        """
+        if not seq:
+            return seq
+        k = n % len(seq)
+        return seq[k:] + seq[:k]
+
     votes: list[JurorVote] = []
     verdict: Verdict | None = None
     prev_sig = None
-    for d_round in range(1, case.deliberation_rounds + 1):
+    exhorted = False
+    exhortation_text = ""
+    # One extra round is held in reserve for the judge's exhortation after a
+    # deadlock, so a jury that stalls gets a genuine second attempt.
+    max_rounds = case.deliberation_rounds + (1 if case.deadlock_exhortation else 0)
+    d_round = 0
+    while d_round < max_rounds:
+        d_round += 1
+        # EVERY round gets the full sample count, because any round can be the last:
+        # a jury that settles unanimously in round one ends the deliberation there,
+        # and that ballot decides the trial as surely as a final-round one would.
+        passes = case.verdict_passes
         if d_round > 1:
             yield TrialEvent(
                 phase="Deliberation",
@@ -1365,7 +1777,7 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 kind="message",
                 content=fr.statement,
             )
-            for p in personas:
+            for p in _rotate(personas, d_round - 1):
                 rr = await juror_remark(p)
                 lean = f"  [leaning: {rr.leaning}]" if rr.leaning else ""
                 yield TrialEvent(
@@ -1384,29 +1796,37 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             extra = ""
         else:
             others = "\n".join(
-                f"- {v.juror_name} voted {v.verdict}: {v.reasoning}" for v in votes
+                f"- {v.juror_name} voted {v.verdict}: {v.reasoning}"
+                for v in _rotate([x for x in votes if not x.abstained], d_round - 1)
             )
             tally_line = ", ".join(f"{k}: {n}" for k, n in verdict.tally.items())
             extra = (
                 f"\n\nThis is deliberation round {d_round}. The running tally is "
                 f"{tally_line}. Here is what the other jurors said:\n{others}\n\n"
-                "Reconsider and give your vote for THIS round. Hold firm if the arguments "
-                "justify it, or change your mind if you are genuinely persuaded."
+                "Reconsider and give your vote for THIS round. A head-count is not an "
+                "argument: change your mind only if a REASON you have heard actually "
+                "answers your doubt, and hold firm if none does."
             )
+        if exhortation_text:
+            extra += f"\n\nThe judge has addressed you:\n{exhortation_text}"
 
-        votes = list(await asyncio.gather(*[get_vote(p, extra) for p in personas]))
+        votes = list(await asyncio.gather(*[get_vote(p, extra, passes) for p in personas]))
         if d_round == 1:
             prefix = ""
-        elif d_round == case.deliberation_rounds:
+        elif d_round >= case.deliberation_rounds:
             prefix = "FINAL: "
         else:
             prefix = "(revised) "
         for v in votes:
+            stability = (
+                f" · agreement {int(v.sample_agreement * 100)}%"
+                if passes > 1 and not v.abstained else ""
+            )
             yield TrialEvent(
                 phase="Deliberation",
                 speaker=f"Juror — {v.juror_name}",
                 kind="structured",
-                content=f"{prefix}{v.verdict} (confidence {v.confidence}/10)",
+                content=f"{prefix}{v.verdict} (confidence {v.confidence}/10){stability}",
                 data=v.model_dump(),
             )
         verdict = tally(votes)
@@ -1416,9 +1836,37 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         if (_all_settled(verdict) and _settled_with_conviction(votes, verdict)) or len(personas) <= 1:
             break
         sig = _tally_signature(votes)
-        if d_round > 1 and sig == prev_sig:
-            break  # the divided jury has stopped moving — deadlocked
+        stalled = d_round > 1 and sig == prev_sig
         prev_sig = sig
+        if not stalled and d_round >= case.deliberation_rounds:
+            break  # rounds exhausted, and the room is still moving — that is the verdict
+        if stalled:
+            # A divided jury that has stopped moving. Once, the judge sends them back
+            # with an exhortation (they are asked to reconsider, never to surrender a
+            # doubt they honestly hold); a second stall is a genuine deadlock.
+            if not (case.deadlock_exhortation and not exhorted):
+                break
+            exhorted = True
+            yield TrialEvent(
+                phase="Deliberation", speaker="System", kind="phase",
+                content="The Jury Reports a Deadlock",
+            )
+            split = _delib_status(verdict).strip() or "The jury is divided."
+            ev = await speak(
+                judge,
+                f"{judge_persona_text}\n\nThe jury has sent word that it is divided and is "
+                f"not making progress. {split}\n\nDeliver a short exhortation: ask them to "
+                "return and try again with an open mind, to listen to each other's reasons "
+                "and re-examine their own — while making it absolutely clear that no juror "
+                "should surrender an honestly held view merely to reach a verdict or to "
+                "agree with the majority, and that a jury which genuinely cannot agree is "
+                "entitled to say so. Do NOT suggest what the verdict should be.\n\n"
+                f"{case_brief}",
+                phase="Deliberation", speaker="Judge",
+            )
+            exhortation_text = ev.content
+            yield ev
+            room.append(f"The Judge (to the jury): {ev.content}")
 
     # How the room moved from the private straw poll to the final vote.
     if straw_votes:
@@ -1428,6 +1876,39 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             kind="structured",
             content="How the room moved after deliberation.",
             data={"_movement": True, **_straw_movement(straw_votes, votes, defendants, charges, case.case_type).model_dump()},
+        )
+
+    # Ballot health for this verdict: abstentions, unmatched entries, and how stable
+    # each juror was across samples. A verdict resting on shaky ballots should not
+    # look as authoritative as one resting on solid ones, so we say which it is.
+    gaps = _projection_gaps(votes, defendants, charges)
+    abstained = [v.juror_name for v in votes if v.abstained]
+    agreements = [v.sample_agreement for v in votes if not v.abstained]
+    mean_agreement = round(sum(agreements) / len(agreements), 3) if agreements else 1.0
+    if gaps or abstained or (case.verdict_passes > 1):
+        # `passes` is what the DECIDING round actually sampled. Reporting the config
+        # value instead would show a reassuring "100% agreement" for a ballot that
+        # was never resampled at all.
+        agreement_line = (
+            f"; mean self-agreement {int(mean_agreement * 100)}% over {passes} samples"
+            if passes > 1 else "; single-sample ballots (not resampled)"
+        )
+        yield TrialEvent(
+            phase="Deliberation", speaker="Court Clerk", kind="structured",
+            content=(
+                f"Ballot integrity: {len(votes) - len(abstained)}/{len(votes)} ballots "
+                f"counted{agreement_line}."
+            ),
+            data={
+                "_diagnostics": True,
+                "ballots_counted": len(votes) - len(abstained),
+                "ballots_expected": len(votes),
+                "abstentions": abstained,
+                "mean_sample_agreement": mean_agreement if passes > 1 else None,
+                "verdict_passes": passes,
+                "deciding_round": d_round,
+                "unmatched_entries": gaps,
+            },
         )
 
     # --- 8. Verdict ------------------------------------------------------
@@ -1541,6 +2022,15 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 "The claim is dismissed." if case.case_type == "civil"
                 else "The accused is discharged."
             )
+    # Sentencing detail is only ever coherent where something was actually proved.
+    # The model will sometimes list aggravating factors and a sentencing range under
+    # an acquittal or a mistrial; nothing downstream catches it, so we do it here.
+    if not _has_conviction(verdict, convict_word):
+        ruling.aggravating_factors = []
+        ruling.mitigating_factors = []
+        ruling.sentencing_range = ""
+        ruling.restitution = ""
+        ruling.conditions = []
     yield TrialEvent(
         phase="Ruling",
         speaker="Judge",

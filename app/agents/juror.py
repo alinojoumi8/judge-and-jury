@@ -33,10 +33,17 @@ CHARACTER and reach your own honest verdict based on the arguments and the
 applicable standard of proof (beyond a reasonable doubt for criminal; balance of
 probabilities for civil). Write entirely in English.
 
-Decide element by element. For EACH listed legal element, decide whether it is
-proven to the standard of proof. The accused is guilty/liable ONLY if EVERY
-essential element is proven; if even one is left in reasonable doubt, you must
-acquit. Make your "vote" consistent with your element findings.
+Decide element by element. Return one entry in "element_findings" for EVERY element
+you were given — copy the element text as given, and cover them ALL even where the
+answer is obvious. An element you do not address counts AGAINST the prosecution,
+because the burden is theirs. The accused is guilty/liable ONLY if EVERY essential
+element is proven; if even one is left in reasonable doubt, you must acquit. Make
+your "vote" consistent with your element findings.
+
+Give each element a "probability" as well: your honest percentage (0-100) that it is
+proven on this record. Be candid — "probably true" is somewhere near 70, not 95. If
+you are told a threshold, an element below it is NOT proven, whatever your instinct
+says; this is what holds every juror to the same standard of proof.
 
 Apply the judge's charge faithfully: for circumstantial evidence you may convict
 only if guilt is the ONLY reasonable inference; assess credibility on the W.(D.)
@@ -54,18 +61,19 @@ Reply with ONLY a single JSON object (no prose, no markdown fences):
   "confidence": 7,
   "reasoning": "1-3 sentences in your own voice explaining your vote",
   "element_findings": [
-    {"element": "the element text", "proven": true, "note": "1 sentence why"}
+    {"element": "the element text", "proven": true, "probability": 85, "note": "1 sentence why"}
   ]
 }
 (confidence is an integer from 1 to 10; "vote" must be exactly "convict" or "acquit";
-"proven" is a boolean. Include one entry in "element_findings" for each listed element.)
+"proven" is a boolean; "probability" is an integer from 0 to 100. Include one entry in
+"element_findings" for each listed element.)
 
 If you are told there are MULTIPLE co-accused, judge EACH ONE separately on their
 own role and conduct (they may receive different verdicts) and ALSO include:
   "defendant_votes": [
     {"defendant_name": "exact name", "verdict": "...", "vote": "convict|acquit",
      "confidence": 7, "reasoning": "1-2 sentences",
-     "element_findings": [{"element": "...", "proven": true, "note": "..."}]}
+     "element_findings": [{"element": "...", "proven": true, "probability": 85, "note": "..."}]}
   ]
 with one entry for each named co-accused, each with its own per-element findings.
 With a single accused, omit "defendant_votes" and use the top-level "element_findings".
@@ -75,7 +83,7 @@ elements (the accused may be guilty on one charge and not another) and include:
   "charge_votes": [
     {"charge_label": "exact charge name", "verdict": "...", "vote": "convict|acquit",
      "confidence": 7, "reasoning": "1-2 sentences",
-     "element_findings": [{"element": "...", "proven": true, "note": "..."}]}
+     "element_findings": [{"element": "...", "proven": true, "probability": 85, "note": "..."}]}
   ]
 with one entry per charge. In a case that is BOTH multi-accused AND multi-charge,
 put each accused's per-charge votes inside that accused's "defendant_votes" entry as
@@ -135,18 +143,27 @@ This is a fictional courtroom simulation, not real legal advice.
 
 
 def build_juror_pool_agent(model) -> Agent:
+    # High temperature is right here: this is invention, and it is the SOURCE of the
+    # jury's diversity — which is where disagreement should come from.
     return Agent(model, system_prompt=JURY_POOL_SYSTEM_PROMPT, model_settings={"temperature": 0.9})
 
 
 def build_juror_agent(model) -> Agent:
-    return Agent(model, system_prompt=JUROR_SYSTEM_PROMPT, model_settings={"temperature": 0.7})
+    # Low temperature: this is the ballot that decides the trial. Jurors should differ
+    # because their personas and readings of the evidence differ, not because the
+    # sampler rolled differently — at 0.7 the same juror on the same record would
+    # return different verdicts run to run, which is noise wearing the costume of
+    # deliberation.
+    return Agent(model, system_prompt=JUROR_SYSTEM_PROMPT, model_settings={"temperature": 0.25})
 
 
 def build_deliberation_agent(model) -> Agent:
     """A juror speaking in the jury-room discussion (returns a DeliberationRemark)."""
-    return Agent(model, system_prompt=DELIBERATION_SYSTEM_PROMPT, model_settings={"temperature": 0.8})
+    # Discussion, not decision — some warmth here keeps the room from sounding like
+    # twelve copies of one person.
+    return Agent(model, system_prompt=DELIBERATION_SYSTEM_PROMPT, model_settings={"temperature": 0.7})
 
 
 def build_foreperson_agent(model) -> Agent:
     """The foreperson who frames and takes stock of the deliberation."""
-    return Agent(model, system_prompt=FOREPERSON_SYSTEM_PROMPT, model_settings={"temperature": 0.6})
+    return Agent(model, system_prompt=FOREPERSON_SYSTEM_PROMPT, model_settings={"temperature": 0.5})

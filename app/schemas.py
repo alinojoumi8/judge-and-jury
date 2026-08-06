@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 CaseType = Literal["criminal", "civil"]
 # A juror's normalized decision. Free-text verdict wording is kept for display,
@@ -43,6 +43,19 @@ class Witness(BaseModel):
     # Optional courtroom demeanour (nervous / confident / evasive / precise…). If
     # empty and personas are on, the casting director assigns one automatically.
     demeanour: str = ""
+
+
+class Charge(BaseModel):
+    """One charge / count, with its OWN essential elements.
+
+    When a case has more than one charge, the jury returns a SEPARATE verdict on
+    each (e.g. guilty of fraud, not guilty of possession). Produced by the intake
+    clerk, or pinned on CaseInput to hold the elements fixed across runs.
+    """
+
+    label: str = ""              # e.g. "Fraud over $5,000 (s.380)"
+    statute: str = ""            # optional, from the input only
+    elements: list[str] = Field(default_factory=list)
 
 
 class RolePersona(BaseModel):
@@ -95,6 +108,12 @@ class CaseInput(BaseModel):
     judge_persona: RolePersona | None = None
     # Optional co-accused. Empty => single-accused trial (classic behaviour).
     defendants: list[Defendant] = Field(default_factory=list)
+    # PIN the charges and their essential legal elements. Left empty, the intake
+    # clerk derives them — and re-derives them differently on the next run, which
+    # silently moves the verdict, since conviction is an AND over the elements. For
+    # a case you intend to run more than once, state them here: the elements of a
+    # given offence are settled law, not something to re-invent per run.
+    charges: list[Charge] = Field(default_factory=list)
     # Optional witnesses. Empty => no evidence phase (classic behaviour).
     witnesses: list[Witness] = Field(default_factory=list)
     max_witnesses: int = Field(default=3, ge=1, le=5)
@@ -111,6 +130,29 @@ class CaseInput(BaseModel):
     # Two-pass "draft → self-ground-check → revise" for witnesses/closings (opt-in).
     self_ground: bool = False
     model: str | None = Field(default=None, description="Optional MiniMax model override.")
+
+    # ---- Reliability controls (see README "Making the verdict reliable") ----
+    # Self-consistency on the BINDING ballot: each juror casts K independent ballots
+    # and their modal ballot is the one that counts. K=1 keeps the old behaviour;
+    # K=3 removes most single-sample noise at 3x the deliberation cost.
+    verdict_passes: int = Field(default=1, ge=1, le=5)
+    # An essential element the juror never addressed counts as NOT proven — the
+    # burden is on the prosecution, so silence is never a finding in its favour.
+    strict_elements: bool = True
+    # Hold jurors to the standard they were charged with: an element they marked
+    # "proven" but scored BELOW the threshold is treated as not proven. Never
+    # upgrades a "not proven" — it only enforces the juror's own stated confidence.
+    calibrated_proof: bool = True
+    # Percentage threshold for "proven". None => 90 for criminal (reasonable doubt),
+    # 51 for civil (balance of probabilities).
+    proof_threshold: int | None = Field(default=None, ge=1, le=100)
+    # A neutral clerk compiles a per-element evidence digest from the record and the
+    # testimony before the jury retires, so deliberation is anchored to evidence
+    # rather than to whichever closing was more stirring.
+    evidence_digest: bool = True
+    # When a divided jury stops moving, the judge delivers one exhortation to try
+    # again (bounded: at most one extra deliberation round).
+    deadlock_exhortation: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -152,18 +194,6 @@ class AgreedRecord(BaseModel):
     authorities: list[str] = Field(default_factory=list)    # statutes/cases EXPLICITLY in the input
 
 
-class Charge(BaseModel):
-    """One charge / count, with its OWN essential elements.
-
-    When a case has more than one charge, the jury returns a SEPARATE verdict on
-    each (e.g. guilty of fraud, not guilty of possession).
-    """
-
-    label: str = ""              # e.g. "Fraud over $5,000 (s.380)"
-    statute: str = ""            # optional, from the input only
-    elements: list[str] = Field(default_factory=list)
-
-
 class StructuredCase(BaseModel):
     """Intake agent's structured view of the case.
 
@@ -193,11 +223,43 @@ class ElementFinding(BaseModel):
 
     `proven` means the juror is satisfied that element is met to the applicable
     standard of proof. A single essential element left unproven means acquit.
+
+    `probability` is how sure they are, as a percentage — it makes the standard of
+    proof explicit and checkable instead of leaving "beyond a reasonable doubt" to
+    each model's private intuition. `None` means the juror did not give one.
     """
 
     element: str = ""
     proven: bool = False
+    probability: int | None = Field(default=None, ge=0, le=100)
     note: str = ""
+
+    @field_validator("probability", mode="before")
+    @classmethod
+    def _coerce_probability(cls, v: Any) -> Any:
+        """Accept the shapes models actually emit: 85, "85", "85%", 0.85, "high".
+
+        A rejected value here would fail the WHOLE ballot, and after retries that
+        juror abstains — so a percent sign must never cost someone their vote.
+        Anything genuinely unreadable becomes None, which just falls back to the
+        juror's boolean finding.
+        """
+        if v is None or isinstance(v, bool):
+            return None
+        if isinstance(v, str):
+            v = v.strip().rstrip("%").strip()
+            if not v:
+                return None
+            try:
+                v = float(v)
+            except ValueError:
+                return None
+        if isinstance(v, (int, float)):
+            # A model asked for a percentage sometimes answers with a 0-1 fraction.
+            if 0 < v <= 1:
+                v = v * 100
+            return max(0, min(100, round(v)))
+        return None
 
 
 class ChargeVote(BaseModel):
@@ -250,6 +312,13 @@ class JurorVote(BaseModel):
     vote: VoteChoice = "acquit"  # normalized convict/acquit signal used for tallying
     confidence: int = Field(default=5, ge=1, le=10)
     reasoning: str = ""
+    # True when no ballot could be obtained from this juror (the model failed after
+    # retries). An abstention is EXCLUDED from the tally — it must never be counted
+    # as a silent acquittal, which in a criminal trial would force a hung jury.
+    abstained: bool = False
+    # With verdict_passes > 1, the share of this juror's independent samples that
+    # agreed with the ballot that counted. 1.0 = they gave the same answer every time.
+    sample_agreement: float = Field(default=1.0, ge=0.0, le=1.0)
     # Per-element findings for the (single) accused; ignored in multi-defendant
     # trials, where each entry in `defendant_votes` carries its own findings.
     element_findings: list[ElementFinding] = Field(default_factory=list)
@@ -263,8 +332,8 @@ class DeliberationRemark(BaseModel):
     """One juror's spoken turn in the jury room (not a vote — that comes after).
 
     `leaning` is a short, free-text indication of where the juror currently sits
-    (e.g. "leaning acquit on Vance"); it colours the discussion but never feeds
-    the tally — only the formal vote does.
+    (e.g. "leaning acquit on the second accused"); it colours the discussion but
+    never feeds the tally — only the formal vote does.
     """
 
     juror_name: str = "Juror"
@@ -289,6 +358,7 @@ class ChargeVerdict(BaseModel):
     unanimous: bool
     hung: bool
     dissent_summary: str
+    abstentions: int = 0
 
 
 class DefendantVerdict(BaseModel):
@@ -301,6 +371,7 @@ class DefendantVerdict(BaseModel):
     unanimous: bool
     hung: bool
     dissent_summary: str
+    abstentions: int = 0
     # Per-charge breakdown for this accused (multi-charge trials).
     per_charge: list[ChargeVerdict] = Field(default_factory=list)
 
@@ -318,6 +389,9 @@ class Verdict(BaseModel):
     unanimous: bool
     hung: bool
     dissent_summary: str
+    # Jurors who could not return a ballot. They are excluded from the tally above,
+    # so `unanimous` means "unanimous among the jurors who actually voted".
+    abstentions: int = 0
     per_defendant: list[DefendantVerdict] = Field(default_factory=list)
     # Per-charge breakdown for the (single) accused in multi-charge trials.
     per_charge: list[ChargeVerdict] = Field(default_factory=list)
@@ -335,6 +409,59 @@ class JudgeRuling(BaseModel):
     sentencing_range: str = ""           # e.g. "18-36 months custody (s.380 over $5k)"
     restitution: str = ""                # amount/terms, or victim-impact acknowledgement
     conditions: list[str] = Field(default_factory=list)  # probation terms / conditions
+
+
+# ---------------------------------------------------------------------------
+# Evidence digest (what the jury actually has, element by element)
+# ---------------------------------------------------------------------------
+class ElementEvidence(BaseModel):
+    """The evidence bearing on ONE element of ONE charge, stated neutrally."""
+
+    element: str = ""
+    supporting: list[str] = Field(default_factory=list)   # points FOR the element
+    undermining: list[str] = Field(default_factory=list)  # points AGAINST it
+    gaps: list[str] = Field(default_factory=list)         # what the record simply lacks
+
+
+class ChargeEvidence(BaseModel):
+    charge_label: str = ""
+    elements: list[ElementEvidence] = Field(default_factory=list)
+
+
+class EvidenceDigest(BaseModel):
+    """A neutral, per-element map of the evidence, compiled before the jury retires.
+
+    Threaded into every deliberation prompt so jurors weigh evidence against the
+    elements rather than re-reading 150KB of advocacy and remembering the loudest
+    parts. Purely descriptive — it draws no conclusion and takes no side.
+    """
+
+    defendant_name: str = ""  # empty for a single-accused trial
+    charges: list[ChargeEvidence] = Field(default_factory=list)
+    undisputed: list[str] = Field(default_factory=list)  # facts neither side contests
+    disputed: list[str] = Field(default_factory=list)    # the live factual disputes
+
+
+# ---------------------------------------------------------------------------
+# Run manifest (reproducibility)
+# ---------------------------------------------------------------------------
+class RunManifest(BaseModel):
+    """The settings a run was produced under — emitted first so any transcript
+    can be traced back to the exact configuration that generated it."""
+
+    model: str = ""
+    case_type: str = ""
+    jury_size: int = 0
+    argument_rounds: int = 0
+    deliberation_rounds: int = 0
+    deliberation_style: str = ""
+    verdict_passes: int = 1
+    proof_threshold: int = 0
+    strict_elements: bool = True
+    calibrated_proof: bool = True
+    evidence_digest: bool = False
+    grounding_check: bool = False
+    straw_poll: bool = True
 
 
 # ---------------------------------------------------------------------------

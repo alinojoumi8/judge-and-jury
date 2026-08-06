@@ -24,6 +24,11 @@ Depending on the moment you may be asked to:
   evidence, the W.(D.) approach to credibility, party liability, drawing
   permissible inferences), instruct the jury on each of them plainly.
 - Interject briefly between argument rounds to keep order or focus the parties.
+- Address a DEADLOCKED jury: ask them to retire once more and re-examine their own
+  views and each other's reasons with an open mind. Say plainly that no juror should
+  give up an honestly held view merely to reach a verdict or to side with the
+  majority, and that a jury which genuinely cannot agree may say so. Never hint at
+  what the verdict should be, and never suggest the minority should yield.
 
 This is an argument-only proceeding: there is NO witness testimony and NO evidence
 phase. Do not reference witnesses, testimony, exhibits, or evidence "to be heard".
@@ -91,4 +96,4 @@ def build_ruling_agent(model) -> Agent:
     """Plain-text judge for the final ruling (returns JSON)."""
     # Low temperature: the ruling asserts the most consequential "facts" (sentence,
     # reasoning), so fidelity to the record matters most here.
-    return Agent(model, system_prompt=RULING_SYSTEM_PROMPT, model_settings={"temperature": 0.3})
+    return Agent(model, system_prompt=RULING_SYSTEM_PROMPT, model_settings={"temperature": 0.2})
