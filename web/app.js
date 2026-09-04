@@ -8,6 +8,68 @@ const stopBtn = document.getElementById("stopBtn");
 // cancel the trial task, which cancels whatever model call is in flight.
 let controller = null;
 stopBtn.addEventListener("click", () => { if (controller) controller.abort(); });
+
+/* ---------------- saving a run ---------------- */
+// Everything received this run, kept twice: the raw events (lossless) and a
+// Markdown rendering built as they arrive — so a transcript can be saved from the
+// browser the way the CLI saves one, instead of the page being the only copy.
+const dlMdBtn = document.getElementById("dlMdBtn");
+const dlJsonBtn = document.getElementById("dlJsonBtn");
+let runEvents = [];
+let runMarkdown = [];
+let runTitle = "trial";
+
+function record(ev) {
+  runEvents.push(ev);
+  if (ev.kind === "phase") runMarkdown.push("", `## ${ev.content}`);
+  else if (ev.kind === "message") runMarkdown.push("", `**${ev.speaker}:** ${ev.content}`);
+  else if (ev.kind === "structured") {
+    runMarkdown.push("", `**${ev.speaker}:** ${ev.content || ""}`);
+    const bullets = toBullets(ev.data || {}, "");
+    if (bullets.length) runMarkdown.push("", ...bullets);
+  } else if (ev.kind === "error") runMarkdown.push("", `> **ERROR:** ${ev.content}`);
+  else if (ev.kind === "done") runMarkdown.push("", "_Trial complete._");
+}
+
+// A generic Markdown rendering of a structured payload: scalars as "key: value",
+// lists of scalars joined, nested objects and lists as sub-bullets. Marker keys
+// (leading underscore) and empty values are skipped.
+function toBullets(obj, indent, depth = 0) {
+  const out = [];
+  if (depth > 3 || !obj || typeof obj !== "object") return out;
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("_") || v == null || v === "" || (Array.isArray(v) && !v.length)) continue;
+    if (Array.isArray(v)) {
+      if (v.every((x) => typeof x !== "object")) { out.push(`${indent}- ${k}: ${v.join("; ")}`); continue; }
+      out.push(`${indent}- ${k}:`);
+      for (const x of v) {
+        if (x && typeof x === "object") {
+          const label = x.element || x.charge_label || x.defendant_name || x.juror_name || x.name || x.claim || "(entry)";
+          out.push(`${indent}  - ${label}`);
+          out.push(...toBullets(x, indent + "    ", depth + 1));
+        } else out.push(`${indent}  - ${x}`);
+      }
+    } else if (typeof v === "object") {
+      out.push(`${indent}- ${k}:`);
+      out.push(...toBullets(v, indent + "  ", depth + 1));
+    } else out.push(`${indent}- ${k}: ${v}`);
+  }
+  return out;
+}
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function runFileStem() {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  const slug = (runTitle || "trial").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "trial";
+  return `trial-${slug}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+dlMdBtn.addEventListener("click", () => download(runFileStem() + ".md", runMarkdown.join("\n") + "\n", "text/markdown"));
+dlJsonBtn.addEventListener("click", () => download(runFileStem() + ".json", JSON.stringify(runEvents, null, 2), "application/json"));
 const transcript = document.getElementById("transcript");
 const statusEl = document.getElementById("status");
 const phasePill = document.getElementById("phase-pill");
@@ -175,6 +237,11 @@ async function runTrial(payload) {
   startBtn.disabled = true;
   controller = new AbortController();
   stopBtn.disabled = false;
+  runEvents = [];
+  runTitle = payload.title || "trial";
+  runMarkdown = [`# Trial transcript — ${runTitle}`, "", `**Charge / claim:** ${payload.charge_or_claim || ""}`];
+  dlMdBtn.disabled = true;
+  dlJsonBtn.disabled = true;
   setStatus("In session", "is-running");
   courtSub.textContent = "Proceedings under way…";
   phasePill.hidden = false;
@@ -236,12 +303,16 @@ function finish(cls, statusText, subText) {
   startBtn.disabled = false;
   stopBtn.disabled = true;
   controller = null;
+  const canSave = runEvents.length > 0;
+  dlMdBtn.disabled = !canSave;
+  dlJsonBtn.disabled = !canSave;
   setStatus(statusText, cls);
   if (subText) courtSub.textContent = subText;
   document.querySelectorAll(".body.typing").forEach((b) => b.classList.remove("typing"));
 }
 
 function handleEvent(ev) {
+  record(ev);
   switch (ev.kind) {
     case "phase":
       phasePill.hidden = false;

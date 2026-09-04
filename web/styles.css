@@ -416,6 +416,10 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
 }
 .btn-secondary:hover:not(:disabled) { background: rgba(224,106,95,0.10); }
 .btn-secondary:disabled { opacity: 0.35; cursor: not-allowed; }
+.downloads { display: flex; gap: 8px; }
+.downloads .btn-secondary { flex: 1; width: auto; font-size: 0.85rem; }
+.btn-quiet { border-color: rgba(160,160,170,0.35); color: var(--muted); }
+.btn-quiet:hover:not(:disabled) { background: rgba(160,160,170,0.10); }
 .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 14px 30px -12px rgba(205, 167, 90, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; filter: grayscale(0.3); }
