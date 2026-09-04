@@ -23,3 +23,6 @@ outputs/
 # Broadened from smart_prime_case* to catch every real-matter fixture (fresh,
 # grounded, trial_12jury, …), which the narrower pattern let slip through.
 samples/smart_prime_*
+
+# Throwaway environment used only to regenerate requirements.lock
+.lockenv/

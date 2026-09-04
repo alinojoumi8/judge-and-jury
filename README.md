@@ -220,10 +220,26 @@ python scripts/compare_trials.py outputs/trial_A.md outputs/trial_B.md
 python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+# or, for the exact versions CI runs against:
+pip install -r requirements.lock
 
 copy .env.example .env
 # then open .env and paste your MiniMax token-plan key
 ```
+
+`requirements.txt` is the human-readable spec; `requirements.lock` is its exact
+resolved closure (runtime plus the test and lint tools), and it is what CI installs.
+After changing either requirements file, regenerate the lock from a clean venv:
+
+```powershell
+python -m venv --without-pip .lockenv
+pip --python .lockenv\Scripts\python.exe install -r requirements.txt -r requirements-dev.txt
+pip --python .lockenv\Scripts\python.exe freeze     # paste under the header in requirements.lock, then delete .lockenv
+```
+
+Pin to versions you have actually run (`-c` with a freeze of your working venv) rather
+than whatever the floors would resolve to today — the lock exists to reproduce a
+known-good state, not to upgrade.
 
 Edit `.env`:
 
