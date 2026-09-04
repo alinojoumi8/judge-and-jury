@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
+from .estimate import estimate_calls
 from .orchestrator import run_trial
 from .schemas import CaseInput
 
@@ -39,6 +40,12 @@ async def health() -> JSONResponse:
         return JSONResponse({"ok": True, "model": s.model, "base_url": s.base_url})
     except Exception as exc:  # missing key, etc.
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
+@app.post("/api/estimate")
+async def estimate(case: CaseInput) -> JSONResponse:
+    """How many model calls this configuration will cost, before anything runs."""
+    return JSONResponse(estimate_calls(case))
 
 
 @app.post("/api/trial")

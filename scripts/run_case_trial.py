@@ -28,6 +28,7 @@ except Exception:
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.estimate import estimate_calls  # noqa: E402
 from app.orchestrator import run_trial  # noqa: E402
 from app.schemas import CaseInput  # noqa: E402
 
@@ -357,6 +358,14 @@ async def main() -> None:
     if args.no_digest:
         data["evidence_digest"] = False
     case = CaseInput(**data)
+    est = estimate_calls(case)
+    print(
+        f"Estimated model calls per run: {est['min_calls']}-{est['max_calls']} "
+        f"(jury {case.jury_size} x {case.verdict_passes} pass(es), "
+        f"{min(len(case.witnesses), case.max_witnesses)} witness(es), "
+        f"{case.argument_rounds} argument / {case.deliberation_rounds} deliberation round(s))",
+        flush=True,
+    )
 
     out_dir = ROOT / "outputs"
     out_dir.mkdir(exist_ok=True)
