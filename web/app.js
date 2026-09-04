@@ -113,6 +113,21 @@ function roleInfo(speaker) {
   return { key: "system", tag: "", icon: "dot" };
 }
 
+/* ---------------- API key (only when the server requires one) ---------------- */
+// With COURTROOM_API_KEY set on the server, every trial and estimate request must
+// carry it. The page asks once, keeps it for the browser session only, and sends it
+// as X-API-Key; without a key configured the field stays hidden.
+const apiKeyField = document.getElementById("apikey-field");
+const apiKeyInput = document.getElementById("f-apikey");
+function storedKey() { try { return sessionStorage.getItem("courtroom_api_key") || ""; } catch { return ""; } }
+function authHeaders() { const k = storedKey(); return k ? { "X-API-Key": k } : {}; }
+if (apiKeyInput) {
+  apiKeyInput.value = storedKey();
+  apiKeyInput.addEventListener("input", () => {
+    try { sessionStorage.setItem("courtroom_api_key", apiKeyInput.value.trim()); } catch { /* private mode */ }
+  });
+}
+
 /* ---------------- configured model hint ---------------- */
 // The placeholder used to hard-code one model name; the real default is whatever
 // MINIMAX_MODEL the server was started with, which /api/health already reports.
@@ -121,8 +136,14 @@ function roleInfo(speaker) {
     const h = await (await fetch("/api/health")).json();
     const modelInput = document.getElementById("f-model");
     if (h.ok && h.model && modelInput) modelInput.placeholder = "default: " + h.model;
+    if (h.auth_required && apiKeyField) apiKeyField.hidden = false;
   } catch { /* offline or misconfigured: keep the static placeholder */ }
 })();
+
+// What the server said went wrong, in its own words when it gave any.
+async function serverError(res) {
+  try { const j = await res.json(); return j.error || j.detail || ""; } catch { return ""; }
+}
 
 /* ---------------- submit / stream ---------------- */
 form.addEventListener("submit", async (e) => {
@@ -192,7 +213,7 @@ async function updateEstimate() {
   const seq = ++estimateSeq;
   try {
     const res = await fetch("/api/estimate", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(payload),
     });
     if (!res.ok || seq !== estimateSeq) return;
     const est = await res.json();
@@ -251,7 +272,7 @@ async function runTrial(payload) {
   try {
     res = await fetch("/api/trial", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -261,7 +282,16 @@ async function runTrial(payload) {
     return finish("is-error", "Connection lost", "The court could not convene.");
   }
   if (!res.ok) {
-    renderError("Server returned status " + res.status);
+    const detail = await serverError(res);
+    if (res.status === 401) {
+      if (apiKeyField) apiKeyField.hidden = false;
+      renderError("This server requires an API key" + (storedKey() ? " and the one entered was rejected." : ".") +
+                  " Enter it in the API key field and try again.");
+    } else if (res.status === 429) {
+      renderError(detail || "Too many trials right now; try again shortly.");
+    } else {
+      renderError("Server returned status " + res.status + (detail ? ": " + detail : ""));
+    }
     return finish("is-error", "Error", "The court could not convene.");
   }
 
