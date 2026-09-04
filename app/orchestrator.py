@@ -24,7 +24,6 @@ from .agents import (
     build_verifier_agent,
     build_witness_agent,
 )
-from .config import get_settings
 from .llm_utils import run_structured
 from .model_factory import build_model
 from .schemas import (
@@ -865,7 +864,9 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         data={
             "_manifest": True,
             **RunManifest(
-                model=case.model or get_settings().model,
+                # The name of the model actually built — not a second settings
+                # lookup, which is one more thing that needs a key just to run offline.
+                model=str(getattr(model, "model_name", None) or case.model or ""),
                 case_type=case.case_type,
                 jury_size=case.jury_size,
                 argument_rounds=case.argument_rounds,
