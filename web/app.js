@@ -2,6 +2,12 @@
 
 const form = document.getElementById("caseForm");
 const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+// The controller for the run in progress. Aborting it rejects the fetch (or the
+// stream read) with an AbortError, and the dropped connection makes the server
+// cancel the trial task, which cancels whatever model call is in flight.
+let controller = null;
+stopBtn.addEventListener("click", () => { if (controller) controller.abort(); });
 const transcript = document.getElementById("transcript");
 const statusEl = document.getElementById("status");
 const phasePill = document.getElementById("phase-pill");
@@ -129,6 +135,8 @@ async function runTrial(payload) {
   transcript.innerHTML = "";
   stick = true;
   startBtn.disabled = true;
+  controller = new AbortController();
+  stopBtn.disabled = false;
   setStatus("In session", "is-running");
   courtSub.textContent = "Proceedings under way…";
   phasePill.hidden = false;
@@ -140,8 +148,10 @@ async function runTrial(payload) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
   } catch (err) {
+    if (err.name === "AbortError") return stopped();
     renderError("Could not reach the server: " + err.message);
     return finish("is-error", "Connection lost", "The court could not convene.");
   }
@@ -153,19 +163,25 @@ async function runTrial(payload) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n\n")) >= 0) {
-      const line = buffer.slice(0, idx).replace(/^data:\s?/, "").trim();
-      buffer = buffer.slice(idx + 2);
-      if (!line) continue;
-      let ev;
-      try { ev = JSON.parse(line); } catch { continue; }
-      handleEvent(ev);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const line = buffer.slice(0, idx).replace(/^data:\s?/, "").trim();
+        buffer = buffer.slice(idx + 2);
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        handleEvent(ev);
+      }
     }
+  } catch (err) {
+    if (err.name === "AbortError" || (controller && controller.signal.aborted)) return stopped();
+    renderError("The stream broke: " + err.message);
+    return finish("is-error", "Disconnected", "The connection was lost.");
   }
   // If the stream closed without the server sending a 'done' event (e.g. server
   // crash or network drop), the button stays disabled and status stays "In session".
@@ -173,8 +189,15 @@ async function runTrial(payload) {
   if (startBtn.disabled) finish("is-error", "Disconnected", "The connection was lost.");
 }
 
+function stopped() {
+  addPhase("Proceedings halted");
+  finish("is-idle", "Stopped", "The proceedings were halted by the user.");
+}
+
 function finish(cls, statusText, subText) {
   startBtn.disabled = false;
+  stopBtn.disabled = true;
+  controller = null;
   setStatus(statusText, cls);
   if (subText) courtSub.textContent = subText;
   document.querySelectorAll(".body.typing").forEach((b) => b.classList.remove("typing"));

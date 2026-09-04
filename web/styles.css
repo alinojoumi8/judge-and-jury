@@ -409,6 +409,13 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
   transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
 }
 .btn-primary svg { width: 19px; height: 19px; }
+.btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center; width: 100%;
+  margin-top: 10px; padding: 10px 14px; border-radius: 10px; font: inherit; cursor: pointer;
+  border: 1px solid rgba(224,106,95,0.45); background: transparent; color: var(--crown);
+}
+.btn-secondary:hover:not(:disabled) { background: rgba(224,106,95,0.10); }
+.btn-secondary:disabled { opacity: 0.35; cursor: not-allowed; }
 .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 14px 30px -12px rgba(205, 167, 90, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; filter: grayscale(0.3); }
