@@ -298,6 +298,28 @@ def test_calibration_downgrades_an_overconfident_proven(monkeypatch):
     assert set(_verdicts(_run(_case(deliberation_rounds=1, calibrated_proof=False))).values()) == {"Guilty"}
 
 
+def test_ruling_failure_falls_back_to_a_disposition_instead_of_an_error(monkeypatch):
+    # The ruling is the last call. If it fails after the jury has returned, the
+    # trial must still end with a Ruling built from the verdict — never an error
+    # event that discards a verdict already in hand.
+    _install_fakes(monkeypatch, lambda n: _ballot(True))
+    inner = orch.run_structured
+
+    async def failing_ruling(agent, prompt, model_cls, retries=2, *, require_english=False):
+        if model_cls is JudgeRuling:
+            raise RuntimeError("ruling model down")
+        return await inner(agent, prompt, model_cls, retries, require_english=require_english)
+
+    monkeypatch.setattr(orch, "run_structured", failing_ruling)
+    events = _run(_case(deliberation_rounds=1))
+    assert not [e for e in events if e.kind == "error"]
+    assert events[-1].kind == "done"
+    ruling = next(e for e in events if e.phase == "Ruling" and e.kind == "structured")
+    assert "could not be generated" in ruling.data["reasoning"]
+    assert ruling.data["sentence_or_remedy"]          # the code-level disposition was filled in
+    assert set(_verdicts(events).values()) == {"Guilty"}  # the verdict itself is untouched
+
+
 def test_cancellation_reaches_the_model_call_and_is_not_an_error_event(monkeypatch):
     # A client disconnect makes Starlette cancel the streaming task. That
     # CancelledError has to travel down to the in-flight model call (so the call

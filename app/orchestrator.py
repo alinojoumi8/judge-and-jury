@@ -2033,9 +2033,27 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         f"{judge_persona_text}\n\n{case_brief}\n\nFull trial transcript:\n{transcript_text()}\n\n"
         f"{verdict_line}\n\n{ruling_directive}\n\nDeliver your ruling."
     )
-    ruling: JudgeRuling = await run_structured(
-        ruling_agent, ruling_prompt, JudgeRuling, require_english=True
-    )
+    # The ruling is the last step, and everything a disposition needs is already
+    # known by now. If the model call fails here, ending the trial with an error
+    # event would throw away a verdict the jury has already returned — so fall back
+    # to a ruling built in code from the verdict and say plainly what happened.
+    ruling_fallback = False
+    try:
+        ruling: JudgeRuling = await run_structured(
+            ruling_agent, ruling_prompt, JudgeRuling, require_english=True
+        )
+    except Exception as exc:
+        logger.warning("Ruling could not be generated; entering a fallback disposition: %s", exc)
+        ruling_fallback = True
+        ruling = JudgeRuling(
+            verdict_acknowledgement=verdict_line,
+            reasoning=(
+                "The Court's reasoned ruling could not be generated in this session. "
+                "The disposition below follows directly from the jury's verdict, which "
+                "is final and binding."
+            ),
+            closing_remarks="Court is adjourned.",
+        )
     # The model sometimes leaves the headline disposition blank — most often on an
     # acquittal, where there is no sentence to impose. Supply a sensible fallback so
     # the ruling always leads with a disposition line rather than an empty bubble.
@@ -2068,6 +2086,9 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         data=ruling.model_dump(),
     )
     # Fact-check the ruling's reasoning + disposition (multi-checker when adversarial).
+    # Nothing to check on a fallback: its text came from code, not from the model.
+    if ruling_fallback:
+        return
     rfc = await ground_event(
         f"{ruling.reasoning} {ruling.sentence_or_remedy}",
         speaker="Judge", phase="Ruling", gphase="ruling",
