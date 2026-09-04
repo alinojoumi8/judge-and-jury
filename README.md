@@ -266,7 +266,9 @@ Open <http://localhost:8000>, fill in the case form, and click **Start Trial**.
 Every option that has no form control — `verdict_passes`, pinned `charges`,
 `grounding_check`, personas, `proof_threshold`, and the rest — goes in the
 **Advanced options (JSON)** box under *Co-accused & witnesses*; keys there override
-the form.
+the form. The range of model calls the current configuration will cost is shown
+under the Start button before you run. When a trial ends — or you stop it — you can
+download the transcript as Markdown or the raw event stream as JSON.
 You can sanity-check config at <http://localhost:8000/api/health>.
 
 ---
