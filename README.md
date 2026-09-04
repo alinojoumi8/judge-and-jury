@@ -231,7 +231,13 @@ Edit `.env`:
 MINIMAX_API_KEY=your-key-here
 MINIMAX_BASE_URL=https://api.minimax.io/v1      # China: https://api.minimaxi.chat/v1
 MINIMAX_MODEL=MiniMax-M2.1                       # set to a model your plan exposes
+# LLM_MAX_CONCURRENCY=8                          # optional: cap on simultaneous model calls
+# LLM_RETRY_BACKOFF=1.5                          # optional: seconds before retrying a failed call
 ```
+
+Model calls are bounded to `LLM_MAX_CONCURRENCY` at a time and retried with backoff
+on transport failures, so a 12-juror, 5-pass deliberation (60 ballots at once)
+stays under a token plan's rate limit instead of losing jurors to 429s.
 
 > **Model name matters.** Use a model id your MiniMax token plan actually exposes
 > (e.g. `MiniMax-M2.1`, `MiniMax-M2.1-lightning`, `MiniMax-M2`, `MiniMax-Text-01`).

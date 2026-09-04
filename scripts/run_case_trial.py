@@ -272,42 +272,45 @@ def _verdict_key(ev) -> str | None:
 
 async def _run_one(case: CaseInput, out_file: Path) -> dict:
     """Stream one trial to console + transcript; return its outcomes for comparison."""
-    lines: list[str] = []
     outcomes: dict[str, str] = {}
+    # Append + flush per line, so the verdict is on disk even if the run dies —
+    # without rewriting the whole file each time (a 200KB transcript was being
+    # rewritten a few thousand times over the course of one trial).
+    with out_file.open("w", encoding="utf-8") as fh:
 
-    def emit(text: str = "") -> None:
-        print(text, flush=True)
-        lines.append(text)
-        out_file.write_text("\n".join(lines), encoding="utf-8")
+        def emit(text: str = "") -> None:
+            print(text, flush=True)
+            fh.write(text + "\n")
+            fh.flush()
 
-    emit(f"# Trial transcript — {case.title}")
-    emit(f"_{case.case_type} · {case.jurisdiction} · jury of {case.jury_size} · "
-         f"{case.argument_rounds} argument round(s)_")
-    emit("")
-    emit(f"**Charge / claim:** {case.charge_or_claim}")
+        emit(f"# Trial transcript — {case.title}")
+        emit(f"_{case.case_type} · {case.jurisdiction} · jury of {case.jury_size} · "
+             f"{case.argument_rounds} argument round(s)_")
+        emit("")
+        emit(f"**Charge / claim:** {case.charge_or_claim}")
 
-    async for ev in run_trial(case):
-        if ev.phase == "Verdict" and ev.kind == "structured":
-            key = _verdict_key(ev)
-            if key:
-                outcomes[key] = (ev.data or {}).get("outcome", "")
-        if ev.kind == "phase":
-            emit("")
-            emit(f"## {ev.content}")
-        elif ev.kind in ("message", "structured"):
-            emit("")
-            emit(f"**{ev.speaker}:** {ev.content}")
-            if ev.kind == "structured" and ev.data:
+        async for ev in run_trial(case):
+            if ev.phase == "Verdict" and ev.kind == "structured":
+                key = _verdict_key(ev)
+                if key:
+                    outcomes[key] = (ev.data or {}).get("outcome", "")
+            if ev.kind == "phase":
                 emit("")
-                for ln in _render_structured(ev.speaker, ev.data):
-                    emit(ln)
-        elif ev.kind == "error":
-            emit("")
-            emit(f"> **ERROR:** {ev.content}")
-            outcomes.setdefault("_error", ev.content)
-        elif ev.kind == "done":
-            emit("")
-            emit("_Trial complete._")
+                emit(f"## {ev.content}")
+            elif ev.kind in ("message", "structured"):
+                emit("")
+                emit(f"**{ev.speaker}:** {ev.content}")
+                if ev.kind == "structured" and ev.data:
+                    emit("")
+                    for ln in _render_structured(ev.speaker, ev.data):
+                        emit(ln)
+            elif ev.kind == "error":
+                emit("")
+                emit(f"> **ERROR:** {ev.content}")
+                outcomes.setdefault("_error", ev.content)
+            elif ev.kind == "done":
+                emit("")
+                emit("_Trial complete._")
 
     print(f"\n[saved transcript -> {out_file}]", flush=True)
     return outcomes

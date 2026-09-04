@@ -11,11 +11,16 @@ the opening words of a statement into its think block).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
 import re
 from typing import Type, TypeVar
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # Control characters that JSON forbids *unescaped* inside string values. MiniMax
 # often emits literal newlines/tabs inside its "statement" value, which the strict
@@ -26,6 +31,26 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 _THINK_OPEN_TO_END = re.compile(r"<think>.*$", re.DOTALL)
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", re.DOTALL)
 
+# Ceiling on simultaneous model calls. Deliberation fans out one call per juror
+# per sample — 12 jurors x 5 passes is 60 at once — and a burst like that turns
+# into 429s. The client retries those a couple of times itself, but a 429 that
+# outlives its retries surfaces here as a failed ballot, i.e. an abstention. A
+# modest ceiling costs a little wall-clock and buys a full jury.
+_MAX_CONCURRENCY = max(1, int(os.getenv("LLM_MAX_CONCURRENCY", "8") or 8))
+# First backoff after a failed model call; doubles per attempt.
+_BACKOFF_SECONDS = max(0.0, float(os.getenv("LLM_RETRY_BACKOFF", "1.5") or 1.5))
+# One semaphore per event loop: an asyncio.Semaphore binds to the loop it first
+# waits on, and scripts (and tests) create a fresh loop per asyncio.run().
+_semaphores: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+
+def _semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _semaphores.get(loop)
+    if sem is None:
+        sem = _semaphores[loop] = asyncio.Semaphore(_MAX_CONCURRENCY)
+    return sem
+
 
 def strip_think(text: str) -> str:
     """Remove `<think>...</think>` (and any unclosed trailing think) from text."""
@@ -34,20 +59,30 @@ def strip_think(text: str) -> str:
     return text.strip()
 
 
-def extract_json(text: str) -> str:
-    """Pull the JSON object/array out of a model reply (after stripping think)."""
+def json_candidates(text: str) -> list[str]:
+    """Every plausible JSON span in a reply, most likely first.
+
+    A fenced block wins outright. Otherwise the outermost {...} is offered before
+    the outermost [...]: picking whichever bracket appears first mis-reads a reply
+    like 'Note [1]: {"a": 1}' as '[1]: {"a": 1}' and burns a retry on it, and every
+    role in this app returns an object. The caller validates each candidate in
+    turn, so a wrong guess costs nothing.
+    """
     text = strip_think(text)
     fence = _JSON_FENCE.search(text)
     if fence:
-        return fence.group(1)
-    # Otherwise grab the outermost {...} or [...].
-    starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
-    ends = [i for i in (text.rfind("}"), text.rfind("]")) if i != -1]
-    if starts and ends:
-        start, end = min(starts), max(ends)
-        if end > start:
-            return text[start : end + 1]
-    return text
+        return [fence.group(1)]
+    out: list[str] = []
+    for open_, close in (("{", "}"), ("[", "]")):
+        start, end = text.find(open_), text.rfind(close)
+        if start != -1 and end > start:
+            out.append(text[start : end + 1])
+    return out or [text]
+
+
+def extract_json(text: str) -> str:
+    """The single most likely JSON span in a reply (see `json_candidates`)."""
+    return json_candidates(text)[0]
 
 
 def parse_json_lenient(candidate: str) -> dict:
@@ -116,20 +151,36 @@ async def run_structured(
 ) -> T:
     """Run a plain-text agent and parse/validate its reply into `model_cls`.
 
-    With `require_english=True`, a reply that parses but contains CJK characters
-    is rejected and re-prompted in English, reusing the same retry budget.
+    One retry budget covers three kinds of failure: the model call itself (a
+    timeout, or a 429 that outlived the client's own retries — backed off and
+    tried again), a reply that does not parse or validate (re-prompted with the
+    error), and, with `require_english=True`, a reply that slipped into CJK
+    (re-prompted in English).
     """
     last_err = ""
     retry_note = ""
     for attempt in range(retries + 1):
-        p = prompt if attempt == 0 else f"{prompt}\n\n{retry_note}"
-        result = await agent.run(p)
-        raw = result.output if isinstance(result.output, str) else str(result.output)
-        candidate = extract_json(raw)
+        p = f"{prompt}\n\n{retry_note}" if retry_note else prompt
         try:
-            obj = model_cls.model_validate(parse_json_lenient(candidate))
-        except Exception as exc:  # noqa: BLE001
-            last_err = str(exc)[:200]
+            async with _semaphore():
+                result = await agent.run(p)
+        except Exception as exc:  # transport / provider failure, not a bad reply
+            last_err = f"{type(exc).__name__}: {exc}"[:200]
+            logger.warning(
+                "Model call failed (attempt %d/%d): %s", attempt + 1, retries + 1, last_err
+            )
+            if attempt < retries:
+                await asyncio.sleep(_BACKOFF_SECONDS * (2 ** attempt))
+            continue
+        raw = result.output if isinstance(result.output, str) else str(result.output)
+        obj: T | None = None
+        for candidate in json_candidates(raw):
+            try:
+                obj = model_cls.model_validate(parse_json_lenient(candidate))
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)[:200]
+        if obj is None:
             retry_note = (
                 "Your previous reply could not be parsed as JSON for the required "
                 f"schema (error: {last_err}). Reply with ONLY a single valid JSON "

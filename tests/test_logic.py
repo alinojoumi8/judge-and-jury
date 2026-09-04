@@ -968,3 +968,112 @@ def test_probability_accepts_the_shapes_models_actually_emit():
 def test_unreadable_probability_leaves_the_finding_usable():
     f = ElementFinding.model_validate({"element": "e", "proven": True, "probability": "very high"})
     assert f.probability is None and _element_proven(f, 90) is True
+
+
+# ---------------------------------------------------------------------------
+# run_structured: transport failures, candidate ordering, concurrency ceiling
+# ---------------------------------------------------------------------------
+class _Reply:
+    def __init__(self, output: str) -> None:
+        self.output = output
+
+
+class _FakeAgent:
+    """Scripted agent: each entry is either a reply string or an exception to raise."""
+
+    def __init__(self, script: list, *, hold: float = 0.0, tracker: dict | None = None) -> None:
+        self.script = list(script)
+        self.calls = 0
+        self.hold = hold
+        self.tracker = tracker
+
+    async def run(self, prompt: str):
+        import asyncio
+        self.calls += 1
+        if self.tracker is not None:
+            self.tracker["inflight"] += 1
+            self.tracker["peak"] = max(self.tracker["peak"], self.tracker["inflight"])
+        try:
+            if self.hold:
+                await asyncio.sleep(self.hold)
+            item = self.script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return _Reply(item)
+        finally:
+            if self.tracker is not None:
+                self.tracker["inflight"] -= 1
+
+
+def test_json_candidates_prefers_the_object_over_a_leading_bracket():
+    from app.llm_utils import json_candidates
+    # The old rule took whichever bracket came first and handed back '[1]: {"a": 1}'.
+    cands = json_candidates('Note [1]: {"a": 1}')
+    assert cands[0] == '{"a": 1}'
+    assert json_candidates('```json\n{"b": 2}\n```') == ['{"b": 2}']
+    assert json_candidates("no json here") == ["no json here"]
+
+
+def test_run_structured_retries_a_transport_failure(monkeypatch):
+    import asyncio
+    import app.llm_utils as lu
+    from app.schemas import Speech
+
+    monkeypatch.setattr(lu, "_BACKOFF_SECONDS", 0.0)
+    agent = _FakeAgent([ConnectionError("reset by peer"), '{"statement": "ok"}'])
+    out = asyncio.run(lu.run_structured(agent, "p", Speech))
+    assert out.statement == "ok" and agent.calls == 2
+
+
+def test_run_structured_gives_up_after_the_retry_budget(monkeypatch):
+    import asyncio
+    import pytest
+    import app.llm_utils as lu
+    from app.schemas import Speech
+
+    monkeypatch.setattr(lu, "_BACKOFF_SECONDS", 0.0)
+    agent = _FakeAgent([TimeoutError("t"), TimeoutError("t"), TimeoutError("t")])
+    with pytest.raises(ValueError):
+        asyncio.run(lu.run_structured(agent, "p", Speech, retries=2))
+    assert agent.calls == 3
+
+
+def test_run_structured_falls_through_to_the_next_json_candidate():
+    import asyncio
+    import app.llm_utils as lu
+    from app.schemas import Speech
+
+    # A reply whose first {...} span is not the object we want, but whose second
+    # candidate parses — no retry (and no extra model call) should be needed.
+    agent = _FakeAgent(['Here you go [see 1]: {"statement": "yes"}'])
+    out = asyncio.run(lu.run_structured(agent, "p", Speech))
+    assert out.statement == "yes" and agent.calls == 1
+
+
+def test_run_structured_bounds_concurrency(monkeypatch):
+    import asyncio
+    import app.llm_utils as lu
+    from app.schemas import Speech
+
+    monkeypatch.setattr(lu, "_MAX_CONCURRENCY", 3)
+    tracker = {"inflight": 0, "peak": 0}
+
+    async def go():
+        agents = [_FakeAgent(['{"statement": "s"}'], hold=0.01, tracker=tracker) for _ in range(12)]
+        return await asyncio.gather(*[lu.run_structured(a, "p", Speech) for a in agents])
+
+    results = asyncio.run(go())
+    assert len(results) == 12 and all(r.statement == "s" for r in results)
+    assert tracker["peak"] <= 3  # never more than the ceiling in flight at once
+
+
+# ---------------------------------------------------------------------------
+# Headline vote in a multi-charge case follows the per-charge breakdown
+# ---------------------------------------------------------------------------
+def test_headline_from_charges_is_convict_on_any_count():
+    from app.orchestrator import _headline_from_charges
+    mixed = [ChargeVote(charge_label="Fraud", vote="convict"), ChargeVote(charge_label="Poss", vote="acquit")]
+    clear = [ChargeVote(charge_label="Fraud", vote="acquit"), ChargeVote(charge_label="Poss", vote="acquit")]
+    assert _headline_from_charges(mixed) == "convict"
+    assert _headline_from_charges(clear) == "acquit"
+    assert _headline_from_charges([]) == "acquit"

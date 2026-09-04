@@ -45,6 +45,17 @@ function roleInfo(speaker) {
   return { key: "system", tag: "", icon: "dot" };
 }
 
+/* ---------------- configured model hint ---------------- */
+// The placeholder used to hard-code one model name; the real default is whatever
+// MINIMAX_MODEL the server was started with, which /api/health already reports.
+(async () => {
+  try {
+    const h = await (await fetch("/api/health")).json();
+    const modelInput = document.getElementById("f-model");
+    if (h.ok && h.model && modelInput) modelInput.placeholder = "default: " + h.model;
+  } catch { /* offline or misconfigured: keep the static placeholder */ }
+})();
+
 /* ---------------- submit / stream ---------------- */
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -481,7 +492,12 @@ function renderVote(speaker, d) {
   const name = speaker.includes("—") ? speaker.split("—")[1].trim() : (d.juror_name || "Juror");
   const row = el("div", "card-row r-juror");
   let badges, body;
-  if (Array.isArray(d.defendant_votes) && d.defendant_votes.length) {
+  if (d.abstained) {
+    // No ballot could be obtained from this juror. They are excluded from the
+    // tally, so they must not read as an acquittal (the old green "(no ballot)").
+    badges = `<span class="vote-badge vote-abstain">no ballot — excluded from the count</span>`;
+    body = escapeHtml(d.reasoning || "");
+  } else if (Array.isArray(d.defendant_votes) && d.defendant_votes.length) {
     // Multi-defendant: one badge per co-accused; per-charge breakdown if present.
     badges = d.defendant_votes.map((dv) =>
       `<span class="vote-badge ${voteIsClear(dv.vote, dv.verdict) ? "vote-clear" : "vote-guilty"}">` +

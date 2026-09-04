@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from typing import AsyncIterator
@@ -57,6 +58,8 @@ from .schemas import (
     Verdict,
     WitnessAnswer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _strategy_text(s: CaseStrategy) -> str:
@@ -379,6 +382,17 @@ def _derive_vote(
                 return "acquit"
         return "convict"
     return "convict" if all(_element_proven(f, threshold) for f in findings) else "acquit"
+
+
+def _headline_from_charges(charge_votes: list) -> str:
+    """A ballot's headline vote where it carries per-charge votes: convicted on any count.
+
+    The per-charge votes are the real verdict in a multi-charge case, and each of
+    them has been re-derived from element findings and the standard of proof. The
+    headline used to come from the juror's free-text verdict instead, so it could
+    say "guilty" over a breakdown that acquitted on every count.
+    """
+    return "convict" if any(cv.vote == "convict" for cv in charge_votes) else "acquit"
 
 
 def _settled_with_conviction(votes: list[JurorVote], verdict, min_conf: int = 6) -> bool:
@@ -770,6 +784,7 @@ async def run_trial(case: CaseInput) -> AsyncIterator[TrialEvent]:
         async for ev in _run_trial_inner(case):
             yield ev
     except Exception as exc:  # surface any failure as an event instead of a 500
+        logger.exception("Trial aborted: %s", exc)
         yield TrialEvent(
             phase="error",
             speaker="System",
@@ -836,6 +851,7 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                     await run_structured(agent, revise, Speech, require_english=True)
                 ).statement.strip()
         except Exception as exc:  # degrade gracefully; keep the trial going
+            logger.warning("%s could not make a statement in %s: %s", speaker, phase, exc)
             text = f"(The {speaker} was unable to make a statement: {exc})"
         log(speaker, text)
         return TrialEvent(phase=phase, speaker=speaker, kind="message", content=text)
@@ -935,7 +951,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             reports = [r for r in raw if not isinstance(r, BaseException)]
             if not reports:
                 return None
-        except Exception:
+        except Exception as exc:
+            logger.warning("Fact-check on %s (%s) skipped: %s", speaker, phase, exc)
             return None
         report = _merge_reports(reports, speaker, phase)
         if not report.flags:
@@ -1020,7 +1037,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 CaseStrategy,
                 require_english=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("No case theory for the %s: %s", side_label, exc)
             return CaseStrategy()
 
     crown_strategy = await _make_strategy(f"prosecution ({prosecutor})")
@@ -1063,7 +1081,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 "demeanour for each witness.",
                 TrialCast, require_english=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Casting failed; using neutral personas: %s", exc)
             cast = _fallback_cast(case.witnesses[: case.max_witnesses])
         crown_p = case.crown_persona or cast.crown        # a pinned persona always wins
         defense_p = case.defense_persona or cast.defense
@@ -1102,7 +1121,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
             require_english=True,
         )
         personas = pool.jurors[: case.jury_size]
-    except Exception:
+    except Exception as exc:
+        logger.warning("Jury pool generation failed; using fallback jurors: %s", exc)
         personas = []
     if len(personas) < case.jury_size:
         personas = _fallback_personas(case.jury_size)
@@ -1199,7 +1219,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                             f"{witness_brief}",
                             Objection, require_english=True,
                         )
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Objection check by %s failed: %s", objector_name, exc)
                         obj = Objection(object=False)
                     if obj.object:
                         yield TrialEvent(
@@ -1215,7 +1236,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                                 'Reply with ONLY {"ruling": "sustained" or "overruled", "text": "..."}.',
                                 ObjectionRuling, require_english=True,
                             )
-                        except Exception:
+                        except Exception as exc:
+                            logger.warning("Objection ruling failed; overruled by default: %s", exc)
                             rule = ObjectionRuling(ruling="overruled", text="")
                         yield TrialEvent(
                             phase="Evidence", speaker="Judge", kind="structured",
@@ -1300,7 +1322,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 f"{case_brief}\n\nTranscript so far:\n{transcript_text()}",
                 DirectedVerdictMotion, require_english=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Directed-verdict motion check failed: %s", exc)
             motion = DirectedVerdictMotion()
         if motion.move:
             yield TrialEvent(
@@ -1323,7 +1346,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                     f"Motion: {motion.element_targeted} — {motion.argument}",
                     DirectedVerdictRuling, require_english=True,
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning("Directed-verdict ruling failed; dismissed by default: %s", exc)
                 dvr = DirectedVerdictRuling(granted=False)
             yield TrialEvent(
                 phase="Motion", speaker="Judge", kind="structured",
@@ -1495,7 +1519,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
                 "Compile the evidence digest. Return ONLY an EvidenceDigest JSON.",
                 EvidenceDigest, require_english=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Evidence digest could not be compiled: %s", exc)
             digest = None
         if digest and digest.charges:
             lines = ["=== EVIDENCE DIGEST (neutral; compiled by the court clerk) ==="]
@@ -1544,7 +1569,6 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
     threshold = _proof_threshold(case) if case.calibrated_proof else None
     # The authoritative element list per charge — what a juror's findings are checked
     # against, so partial or invented findings can't decide the verdict.
-    elements_by_charge = {c.label: list(c.elements) for c in charges}
     primary_elements = list(charges[0].elements) if charges else []
 
     def _elements_for(label: str) -> list[str]:
@@ -1568,10 +1592,14 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         vote.vote = derive(vote, primary_elements if not multi_c else None)
         for cv in vote.charge_votes:
             cv.vote = derive(cv, _elements_for(cv.charge_label))
+        if vote.charge_votes:
+            vote.vote = _headline_from_charges(vote.charge_votes)
         for dv in vote.defendant_votes:
             dv.vote = derive(dv, primary_elements if not multi_c else None)
             for cv in dv.charge_votes:
                 cv.vote = derive(cv, _elements_for(cv.charge_label))
+            if dv.charge_votes:
+                dv.vote = _headline_from_charges(dv.charge_votes)
 
     async def get_vote(persona: JurorPersona, extra: str = "", passes: int = 1) -> JurorVote:
         per_def = ""
@@ -1613,7 +1641,8 @@ async def _run_trial_inner(case: CaseInput) -> AsyncIterator[TrialEvent]:
         async def one_ballot() -> JurorVote | None:
             try:
                 vote = await run_structured(juror_agent, prompt, JurorVote, require_english=True)
-            except Exception:
+            except Exception as exc:
+                logger.warning("No ballot from juror %s: %s", persona.name, exc)
                 return None
             vote.juror_name = persona.name  # keep the persona name even if the model drifts
             # The verdict is driven by the per-element findings: convict only if every

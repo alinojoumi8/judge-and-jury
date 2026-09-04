@@ -17,6 +17,7 @@ from .verifier import build_verifier_agent
 from .witness import build_witness_agent
 
 __all__ = [
+    "build_caster_agent",
     "build_intake_agent",
     "build_digest_agent",
     "build_crown_agent",

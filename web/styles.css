@@ -606,6 +606,7 @@ ul.facts li { margin: 3px 0; font-size: 0.9rem; color: var(--ink-soft); }
 }
 .vote-guilty { background: rgba(224,106,95,0.16); color: var(--guilty); border: 1px solid rgba(224,106,95,0.4); }
 .vote-clear  { background: rgba(105,194,152,0.16); color: var(--clear); border: 1px solid rgba(105,194,152,0.4); }
+.vote-abstain { background: rgba(160,160,170,0.14); color: var(--faint); border: 1px dashed rgba(160,160,170,0.5); }
 .conf { font-size: 0.72rem; color: var(--faint); font-variant-numeric: tabular-nums; }
 
 /* per-element findings checklist under a juror's vote */
