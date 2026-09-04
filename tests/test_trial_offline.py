@@ -298,6 +298,42 @@ def test_calibration_downgrades_an_overconfident_proven(monkeypatch):
     assert set(_verdicts(_run(_case(deliberation_rounds=1, calibrated_proof=False))).values()) == {"Guilty"}
 
 
+def test_cancellation_reaches_the_model_call_and_is_not_an_error_event(monkeypatch):
+    # A client disconnect makes Starlette cancel the streaming task. That
+    # CancelledError has to travel down to the in-flight model call (so the call
+    # is actually abandoned) and must not be swallowed by run_trial's catch-all
+    # into an "error" event — CancelledError is a BaseException for that reason.
+    _install_fakes(monkeypatch, lambda n: _ballot(True))
+    reached = {"stuck": False}
+
+    async def stuck_run_structured(agent, prompt, model_cls, retries=2, *, require_english=False):
+        reached["stuck"] = True
+        await asyncio.Event().wait()  # never returns unless cancelled
+
+    monkeypatch.setattr(orch, "run_structured", stuck_run_structured)
+
+    async def go():
+        events = []
+
+        async def consume():
+            async for ev in orch.run_trial(_case()):
+                events.append(ev)
+
+        task = asyncio.create_task(consume())
+        for _ in range(50):
+            await asyncio.sleep(0.001)
+            if reached["stuck"]:
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return events
+
+    events = asyncio.run(go())
+    assert reached["stuck"]
+    assert not [e for e in events if e.kind in ("error", "done")]
+
+
 @pytest.mark.parametrize("case_type,expected", [("criminal", "Guilty"), ("civil", "Liable")])
 def test_case_type_words_flow_through_to_the_verdict(monkeypatch, case_type, expected):
     _install_fakes(monkeypatch, lambda n: _ballot(True))
