@@ -76,8 +76,29 @@ form.addEventListener("submit", async (e) => {
   const witnesses = parseWitnesses(fd.get("witnesses_raw"));
   if (defendants.length) payload.defendants = defendants;
   if (witnesses.length) payload.witnesses = witnesses;
+  const advanced = parseAdvanced(fd.get("advanced_json"));
+  if (advanced === null) return; // invalid JSON: the error is shown inline, nothing runs
+  Object.assign(payload, advanced);
   await runTrial(payload);
 });
+
+// Optional free-form overrides: any CaseInput field as JSON (verdict_passes, pinned
+// charges, grounding_check, personas, proof_threshold...). This is how every option
+// that has no form control is reached from the UI. Wins over the form on a clash.
+function parseAdvanced(raw) {
+  const err = document.getElementById("advanced-error");
+  const text = (raw || "").trim();
+  if (err) err.hidden = true;
+  if (!text) return {};
+  try {
+    const obj = JSON.parse(text);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) throw new Error("must be a JSON object");
+    return obj;
+  } catch (e) {
+    if (err) { err.textContent = "Advanced options: " + e.message; err.hidden = false; }
+    return null;
+  }
+}
 
 // Optional co-accused: one per line, "Name | role | their side".
 function parseDefendants(raw) {

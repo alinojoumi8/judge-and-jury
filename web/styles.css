@@ -323,6 +323,7 @@ label, .field-label {
   color: var(--muted);
 }
 .hint { color: var(--faint); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.field-error { color: var(--crown); font-size: 0.8rem; margin: 6px 0 0; }
 
 input, select, textarea {
   width: 100%;

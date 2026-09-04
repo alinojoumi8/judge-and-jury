@@ -263,6 +263,10 @@ uvicorn app.main:app --reload
 ```
 
 Open <http://localhost:8000>, fill in the case form, and click **Start Trial**.
+Every option that has no form control — `verdict_passes`, pinned `charges`,
+`grounding_check`, personas, `proof_threshold`, and the rest — goes in the
+**Advanced options (JSON)** box under *Co-accused & witnesses*; keys there override
+the form.
 You can sanity-check config at <http://localhost:8000/api/health>.
 
 ---
