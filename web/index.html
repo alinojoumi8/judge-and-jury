@@ -145,6 +145,12 @@
               <textarea id="f-witnesses" name="witnesses_raw" rows="3"
                         placeholder="Mary Smith | complainant | prosecution | invested, was promised guaranteed returns&#10;Alex Lee | expert | prosecution | forensic accountant who traced the funds"></textarea>
             </div>
+            <div class="field">
+              <label for="f-advanced">Advanced options <span class="hint">JSON — any case field; overrides the form</span></label>
+              <textarea id="f-advanced" name="advanced_json" rows="4" spellcheck="false"
+                        placeholder='{"verdict_passes": 3, "grounding_check": true, "charges": [{"label": "Theft under $5,000", "elements": ["..."]}]}'></textarea>
+              <p class="field-error" id="advanced-error" hidden></p>
+            </div>
           </details>
 
           <button type="submit" id="startBtn" class="btn-primary">
