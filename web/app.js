@@ -65,7 +65,15 @@ function roleInfo(speaker) {
 /* ---------------- submit / stream ---------------- */
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const fd = new FormData(form);
+  const payload = buildPayload(new FormData(form));
+  if (payload === null) return; // invalid advanced JSON: the error is shown inline, nothing runs
+  await runTrial(payload);
+});
+
+// The request body for /api/trial (and /api/estimate) from the form's current
+// state, or null when the Advanced JSON box does not parse. `silent` keeps the
+// live estimate from flashing a JSON error at every keystroke.
+function buildPayload(fd, silent) {
   const payload = {
     title: fd.get("title"),
     case_type: fd.get("case_type"),
@@ -82,17 +90,17 @@ form.addEventListener("submit", async (e) => {
   const witnesses = parseWitnesses(fd.get("witnesses_raw"));
   if (defendants.length) payload.defendants = defendants;
   if (witnesses.length) payload.witnesses = witnesses;
-  const advanced = parseAdvanced(fd.get("advanced_json"));
-  if (advanced === null) return; // invalid JSON: the error is shown inline, nothing runs
+  const advanced = parseAdvanced(fd.get("advanced_json"), silent);
+  if (advanced === null) return null;
   Object.assign(payload, advanced);
-  await runTrial(payload);
-});
+  return payload;
+}
 
 // Optional free-form overrides: any CaseInput field as JSON (verdict_passes, pinned
 // charges, grounding_check, personas, proof_threshold...). This is how every option
 // that has no form control is reached from the UI. Wins over the form on a clash.
-function parseAdvanced(raw) {
-  const err = document.getElementById("advanced-error");
+function parseAdvanced(raw, silent) {
+  const err = silent ? null : document.getElementById("advanced-error");
   const text = (raw || "").trim();
   if (err) err.hidden = true;
   if (!text) return {};
@@ -105,6 +113,36 @@ function parseAdvanced(raw) {
     return null;
   }
 }
+
+/* ---------------- cost estimate ---------------- */
+// Cost scales as jury x passes x rounds (plus witnesses x exchanges x 3). Show the
+// model-call range for the current configuration before the user pays for it,
+// refreshed (debounced) on every form change.
+const costHint = document.getElementById("cost-hint");
+let estimateTimer = null;
+let estimateSeq = 0; // a slow reply for an older form state must not overwrite a newer one
+async function updateEstimate() {
+  if (!costHint) return;
+  const payload = buildPayload(new FormData(form), true);
+  if (payload === null) return;
+  // The estimate needs the shape, not the story: satisfy the required-field minimums.
+  for (const k of ["title", "charge_or_claim", "your_side"]) if (!payload[k]) payload[k] = "-";
+  const seq = ++estimateSeq;
+  try {
+    const res = await fetch("/api/estimate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!res.ok || seq !== estimateSeq) return;
+    const est = await res.json();
+    if (seq !== estimateSeq) return;
+    costHint.textContent =
+      `≈ ${est.min_calls}–${est.max_calls} model calls for this configuration · more jurors × more rounds = more tokens.`;
+  } catch { /* the estimate is a courtesy; it must never block the form */ }
+}
+function scheduleEstimate() { clearTimeout(estimateTimer); estimateTimer = setTimeout(updateEstimate, 400); }
+form.addEventListener("input", scheduleEstimate);
+form.addEventListener("change", scheduleEstimate);
+updateEstimate();
 
 // Optional co-accused: one per line, "Name | role | their side".
 function parseDefendants(raw) {
