@@ -123,6 +123,12 @@
             </div>
           </div>
 
+          <!-- Shown only when the server was started with COURTROOM_API_KEY. -->
+          <div class="field" id="apikey-field" hidden>
+            <label for="f-apikey">API key <span class="hint">this server requires one; kept for this session only</span></label>
+            <input id="f-apikey" type="password" autocomplete="off" spellcheck="false" />
+          </div>
+
           <div class="field">
             <span class="field-label">Jury deliberation</span>
             <div class="segmented" role="radiogroup" aria-label="Jury deliberation style">

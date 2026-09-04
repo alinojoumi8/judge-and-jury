@@ -249,7 +249,15 @@ MINIMAX_BASE_URL=https://api.minimax.io/v1      # China: https://api.minimaxi.ch
 MINIMAX_MODEL=MiniMax-M2.1                       # set to a model your plan exposes
 # LLM_MAX_CONCURRENCY=8                          # optional: cap on simultaneous model calls
 # LLM_RETRY_BACKOFF=1.5                          # optional: seconds before retrying a failed call
+# TRIAL_RATE_PER_MINUTE=6                        # optional: trials each client may start per minute
+# TRIAL_MAX_CONCURRENT=2                         # optional: trials in flight at once
+# COURTROOM_API_KEY=                             # optional: require X-API-Key on /api/trial and /api/estimate
 ```
+
+Every trial costs real money, so `/api/trial` is rate-limited per client and capped
+in flight (429 with `Retry-After` when exceeded). Before exposing the server beyond
+localhost, set `COURTROOM_API_KEY`: the page then asks for the key once and sends it
+with every request.
 
 Model calls are bounded to `LLM_MAX_CONCURRENCY` at a time and retried with backoff
 on transport failures, so a 12-juror, 5-pass deliberation (60 ballots at once)
